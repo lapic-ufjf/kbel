@@ -69,68 +69,6 @@ class Disambiguator:
     def disambiguate(
         self,
         mention: Mention,
-        ks: KnowledgeSource,
-        limit = 10,
-        *args: Any,
-        **kwargs: Any
-    ) -> list[Tuple[str, str, Entity]]:
-        """Core method to disambiguate a label among candidates from the knowledge base.
-
-        Args:
-            mention (Mention): The mention to disambiguate.
-            ks (KnowledgeSource): Knowledge source object to retrieve candidates.
-            limit (int, optional): Maximum number of candidates to consider. Defaults to 10.
-            language (str, optional): Language code for labels/descriptions. Defaults to 'en'.
-
-        Returns:
-            list[Tuple[str, str, T]]: List of tuples with label, description, and entity.
-        """
-
-        def safe_next(it: Iterator) -> Iterator:
-            """Safely iterate over an iterator, skipping errors."""
-            while True:
-                try:
-                    yield next(it)
-                except StopIteration:
-                    break
-                except Exception as e:
-                    logging.info(f'Error fetching item: {e}')
-                    continue
-
-        def extract_text(data: dict[str, Any], key: str) -> str:
-            """Extract the text for a given key and language."""
-            l = mention.language if mention.language else 'en'
-            value = data.get(key, {}).get(l)
-            return value.content if value else ''
-
-        try:
-            if mention.entity_type is EntityType.ITEM:
-                found_candidates = ks.item_descriptor(search=mention.label)
-            elif mention.entity_type is EntityType.PROPERTY:
-                found_candidates = ks.property_descriptor(search=mention.label)
-            else:
-                return []
-        except Exception as e:
-            raise e
-
-        if not found_candidates:
-            return []
-
-        candidates = []
-        for entity, desc in safe_next(iter(found_candidates)):
-            candidate = Candidate(
-                id = entity.iri.content,
-                label = extract_text(desc, 'labels'),
-                description = extract_text(desc, 'descriptions'),
-                iri = entity.iri.content
-            )
-            candidates.append(candidate)
-
-        return self.disambiguate_candidates(mention, candidates, limit, *args, **kwargs)
-
-    def disambiguate_candidates(
-        self,
-        mention: Mention,
         candidates: list[Candidate],
         limit: int = 10,
         *args: Any,
