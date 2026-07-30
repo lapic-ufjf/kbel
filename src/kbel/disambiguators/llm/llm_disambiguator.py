@@ -147,13 +147,13 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
         try:
             c_prompt = ''
             for candidate in candidates:
-                c_prompt += f'        ID: {candidate["id"]}'
+                c_prompt += f'        ID: {candidate.id}'
 
-                c_label = candidate.get("label")
+                c_label = candidate.label
                 if mention.label:
                     c_label = c_label.strip()
                     c_prompt += f'\n        Label: {c_label}'
-                description = candidate.get("description")
+                description = candidate.description
                 if description:
                     description = description.strip()
                     c_prompt += f'\n        Description: {description}'  # noqa E501
@@ -197,12 +197,12 @@ Output:""")
                 disamb_entities = []
                 for entity_id in entity_ids:
                     for c in candidates:
-                        c_id = c.get('id')
+                        c_id = c.id
                         if c_id:
                             if entity_id == c_id:
-                                description = c.get('description')
+                                description = c.description
                                 disamb_entities.append(
-                                    (c['label'], description, c['iri']))
+                                    (c.label, description, c.iri))
                 return disamb_entities[:limit] if limit else disamb_entities
             raise ValueError(f'Could not disambiguate label `{mention.label}` among the candidates.')
 
