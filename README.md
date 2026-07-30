@@ -1,99 +1,145 @@
 # Knowledge Base Entity Linking (KBEL)
 
-KBEL is a framework for linking terms embedded in a given context to entities in a target knowledge base. See examples [here](./examples/demo.ipynb).
+KBEL is a Python framework for **Knowledge Base Entity Linking**. It identifies candidate entities from one or more knowledge bases and links textual mentions to the most appropriate entity using configurable disambiguation strategies.
 
-KBEL leverages [KIF](https://pypi.org/project/kif-lib/)'s abstractions for handling knowledge base features. The main abstractions used are:
-- **Search**: Provides an interface to query a knowledge base and retrieve candidate entities or properties.
-- **Item**: Represents an entity in the knowledge base (e.g., a Wikidata or DBpedia item) and provides access to its label, description, and IRI.
-- **Property**: Represents a property or relationship that links items.
----
+The framework is built around three core concepts:
 
-## Supports multiple disambiguation strategies:
-  - `NaiveDisambiguator`: Given a list of candidates entities, it returns the top-1.
-  - `SimilarityDisambiguator`: Given a list of candidates entities, it selects candidates based on embedding similarity (cosine, dot product, or Euclidean distance).
-  - `LLM_Disambiguator`: Given a list of candidates entities, it leverages a large language model to choose the most relevant candidate given a sentence and optional context.
+- **KnowledgeSource**: retrieves candidate entities from a knowledge base.
+- **Disambiguator**: ranks the retrieved candidates according to a given strategy.
+- **KBEL**: orchestrates the entity linking pipeline by combining a knowledge source and an optional disambiguation strategy.
 
-It is **extensible**: Easily implement new disambiguation methods by subclassing `Disambiguator`.
+Current knowledge source implementations are built on top of the abstractions provided by [KIF](https://pypi.org/project/kif-lib/), making it easy to integrate multiple knowledge bases while exposing a unified API.
+
+See the complete examples in the [demo notebook](./examples/demo.ipynb).
 
 ---
 
-## Quickstart
+## Features
+
+- Plugin architecture for both knowledge sources and disambiguation strategies.
+- Support for multiple knowledge sources.
+- Candidate retrieval for both **Items** and **Properties**.
+- Embedding-based semantic disambiguation.
+- LLM-based disambiguation using OpenAI, LangChain-compatible models, or custom providers.
+- Easily extensible through custom plugins.
+
+---
+
+## Available Disambiguation Strategies
+
+KBEL currently provides the following strategies:
+
+- **Naive** (`naive`): Returns the top-ranked candidate retrieved from the knowledge source.
+- **Similarity** (`sim`): Ranks candidates according to semantic similarity between the mention context and candidate descriptions.
+- **LLM** (`llm`): Uses a Large Language Model to select the most appropriate candidate given the mention and its context.
+
+---
+
+# Installation
+
+```bash
+pip install kbel
+```
+
+---
+
+# Quick Start
 
 ```python
+from kbel import KBEL
+from kbel.knowledge_sources import KnowledgeSource
 from kbel.disambiguators import Disambiguator
+from kbel.core import Mention
+
+ks = KnowledgeSource("wikidata")
+
+kbel = KBEL(ks)
+kbel.disambiguator = Disambiguator("naive")
+
+mention = Mention(
+    label="Python",
+    text="Python is used for coding.",
+    entity_type=EntityType.ITEM
+)
+results = kbel.disambiguate(mention)
+
+for label, description, entity in results:
+    print(label, description, entity)
 ```
 
-### Simple Disambiguator
+---
+
+# Similarity Disambiguator
 
 ```python
-from kbel.disambiguators.simple import SimpleDisambiguator
-from kif_lib import Search
+kbel.disambiguator = Disambiguator("sim")
 
-# Term to link entities
-label = "Python"
-
-# Using KIF Wikidata Searcher
-searcher = Search('wikidata-wapi', limit=10)
-disambiguator = Disambiguator('simple')
-
-results = disambiguator.disambiguate_item(label, searcher)
-for result in results:
-    print (result)
+results = kbel.disambiguate(mention)
 ```
 
-### Similarity Disambiguator
-```python
-from kbel.disambiguators.similarity import SimilarityDisambiguator
+---
 
-disambiguator = Disambiguator('sim')
-results = disambiguator.disambiguate_item(label, searcher, limit=1, sentence="Python is used for coding")
-for result in results:
-    print (result)
-```
+# LLM Disambiguator
 
-### LLM Disambiguator
+Using OpenAI models through LangChain:
 
 ```python
-from kbel.disambiguators.llm import LLM_Disambiguator
+from langchain_openai import ChatOpenAI
+import os
 
-# Using ChatGPT models
-disambiguator = Disambiguator(
-    'llm',
-    model_name='gpt-4',
-    model_provider='openai',
-    model_apikey='YOUR_API_KEY',
-    model_endpoint='https://api.openai.com/v1'
+model = ChatOpenAI(
+    model="gpt-5.2",
+    api_key=os.environ["LLM_API_KEY"]
 )
 
-# Using KIF DBPedia Searcher
-searcher = Search('dbpedia', limit=10)
+kbel.disambiguator = Disambiguator(
+    "llm",
+    model=model
+)
 
-results = disambiguator.disambiguate_item(label, searcher, sentence="Python is used for coding")
+results = kbel.disambiguate(
+    Mention(
+        label="Python",
+        text="Python is used for coding.",
+        entity_type=EntityType.ITEM,
+        context="""
+        Python is a high-level, general-purpose programming language that emphasizes code readability, simplicity, and ease-of-writing with the use of significant indentation,[38] an extensive ("batteries-included") standard library, and garbage collection. Python supports multiple programming paradigms but with an emphasis on object-oriented programming and dynamic typing.
+        """
+    )
+)
+
 for result in results:
-    print (result)
+    print(result)
 ```
+---
 
-or
+## Changing the Knowledge Source
+
+The same disambiguation strategy can be used with different knowledge bases.
 
 ```python
-from kbel.disambiguators.llm import LLM_Disambiguator
+kbel.ks = KnowledgeSource("dbpedia", limit=10)
 
-# Using a LangChain model. For instance, IBM WatsonX
-model = ChatWatsonx(
-    model_id='meta-llama/llama-3-3-70b-instruct',
-    apikey=YOUR_API_KEY,
-    url='YOUR_LLM_API_ENDPOINT',
-    project_id='YOUR_WATSONX_PROJECT_ID',
-)
-disambiguator = Disambiguator('llm', model=model)
+results = kbel.disambiguate(mention)
 
-# Using KIF DBPedia Searcher
-searcher = Search('dbpedia', limit=10)
-
-results = disambiguator.disambiguate_item(label, searcher, sentence="Python is used for coding")
 for result in results:
-    print (result)
+    print(result)
 ```
+
+---
+
+
+# Extending KBEL
+
+KBEL is **extensible**: New plugins can be added by subclassing:
+
+- `KnowledgeSource`
+- `Disambiguator`
+
+Both components are automatically registered and can be instantiated by name.
+
+---
+
 
 ## License
 
