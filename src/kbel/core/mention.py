@@ -1,8 +1,5 @@
-"""
-Core data structures used by KBEL.
-"""
-
-from __future__ import annotations
+# Copyright 2026 LApIC
+# SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -56,7 +53,7 @@ class Mention:
     language: str | None = None
 
     start: int | None = None
-    end: int |None = None
+    end: int | None = None
 
     metadata: dict[str, Any] = field(default_factory=dict)
 

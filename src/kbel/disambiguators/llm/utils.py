@@ -15,7 +15,7 @@ def build_model(
     provider: Literal['ibm', 'openai', 'ollama'],
     endpoint: str,
     apikey: str,
-    **kwargs) -> BaseChatModel:
+    **kwargs) -> "BaseChatModel":
     endpoint = endpoint
     apikey = apikey
     assert endpoint and apikey

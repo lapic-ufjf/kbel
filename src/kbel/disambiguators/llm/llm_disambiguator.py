@@ -3,15 +3,17 @@
 
 import logging
 from textwrap import dedent
-from typing import Any, Literal, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple, TYPE_CHECKING
 
 from kbel.core.mention import Mention
-from langchain_core.language_models import BaseChatModel
 
 from ..abc import Candidate, Disambiguator
 from .constants import EL_DEFAULT_EXAMPLES, EL_DEFAULT_PROMPT
 from .parsers import CommaSeparatedListOutputParserSet
 from .utils import build_model
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 
 LOG = logging.getLogger(__name__)
 
@@ -39,12 +41,12 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
         [('Python', 'Programming language', 'https://www.wikidata.org/wiki/Q28865')]
     """
 
-    _model: BaseChatModel
+    _model: "BaseChatModel"
 
     def __init__(
         self,
         strategy_name: str,
-        model: Optional[BaseChatModel] = None,
+        model: Optional["BaseChatModel"] = None,
         model_name: Optional[str] = None,
         model_provider: Optional[Literal['ibm', 'openai', 'ollama']] = None,
         model_params: dict[str, Any] = {},
@@ -67,6 +69,15 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
             *args: Additional positional arguments for the base Disambiguator.
             **kwargs: Additional keyword arguments for the base Disambiguator.
         """
+        try:
+            from langchain_core.language_models import BaseChatModel
+        except ModuleNotFoundError as e:
+            raise ImportError(
+                "LLM support is not available because the optional dependencies are not installed.\n\n"
+                "Install them with:\n\n"
+                "    pip install 'kbel[llm]'"
+            ) from e
+        
         assert strategy_name == self.strategy_name
         super().__init__()
 
@@ -85,7 +96,7 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
             self._model = _model
 
     @property
-    def model(self) -> BaseChatModel:
+    def model(self) -> "BaseChatModel":
         return self._model
 
     def _disambiguate(
