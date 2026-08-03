@@ -72,7 +72,7 @@ mention = Mention(
     entity_type=EntityType.ITEM,
 )
 
-results = kbel.disambiguate(mention)
+results = kbel.link(mention)
 
 for label, description, entity in results:
     print(label, description, entity)
@@ -91,7 +91,7 @@ for label, description, entity in results:
 ```python
 kbel.disambiguator = Disambiguator("sim")
 
-results = kbel.disambiguate(mention)
+results = kbel.link(mention)
 
 for result in results:
     print(result)
@@ -123,7 +123,7 @@ kbel.disambiguator = Disambiguator(
     model=model
 )
 
-results = kbel.disambiguate(
+results = kbel.link(
     Mention(
         label="Python",
         text="Python is used for coding.",
@@ -145,9 +145,9 @@ for result in results:
 The same disambiguation strategy can be used with different knowledge bases.
 
 ```python
-kbel.knowledge_source = "dbpedia"
+kbel.knowledge_base= "dbpedia"
 
-results = kbel.disambiguate(mention)
+results = kbel.link(mention)
 
 for result in results:
     print(result)

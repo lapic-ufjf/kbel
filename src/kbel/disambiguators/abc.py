@@ -8,7 +8,6 @@ from typing import (Any, AsyncIterator, ClassVar, Final, Iterator,
 
 from kif_lib import Entity, KIF_Object, Property, Item
 
-from kbel.knowledge_sources.knowledge_source import KnowledgeSource
 from kbel.core.mention import EntityType, Mention
 from kbel.core.candidate import Candidate
 
