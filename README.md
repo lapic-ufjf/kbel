@@ -4,11 +4,11 @@ KBEL is a Python framework for **Knowledge Base Entity Linking**. It identifies 
 
 The framework is built around three core concepts:
 
-- **Knowledge Sources**: retrieve candidate entities from a knowledge base.
+- **Search**: retrieve candidate entities from a knowledge base.
 - **Disambiguator**: ranks the retrieved candidates according to a given strategy.
 - **KBEL**: orchestrates the entity linking pipeline.
 
-Current knowledge source implementations are built on top of the abstractions provided by [KIF](https://pypi.org/project/kif-lib/), making it easy to integrate multiple knowledge bases while exposing a unified API.
+Current `Search` implementations are built on top of the abstractions provided by [KIF](https://pypi.org/project/kif-lib/), making it easy to integrate multiple knowledge bases while exposing a unified API.
 
 See the complete examples in the [demo notebook](./examples/demo.ipynb).
 
@@ -16,8 +16,8 @@ See the complete examples in the [demo notebook](./examples/demo.ipynb).
 
 ## Features
 
-- Plugin architecture for both knowledge sources and disambiguation strategies.
-- Support for multiple knowledge sources.
+- Plugin architecture for both knowledge bases and disambiguation strategies.
+- Support for multiple knowledge bases.
 - Candidate retrieval for both **Items** and **Properties**.
 - Embedding-based semantic disambiguation.
 - LLM-based disambiguation using OpenAI, LangChain-compatible models, or custom providers.
@@ -29,7 +29,7 @@ See the complete examples in the [demo notebook](./examples/demo.ipynb).
 
 KBEL currently provides the following strategies:
 
-- **Naive** (`naive`): Returns the top-ranked candidate retrieved from the knowledge source.
+- **Naive** (`naive`): Returns the top-ranked candidate retrieved from the knowledge base.
 - **Similarity** (`sim`): Ranks candidates according to semantic similarity between the mention context and candidate descriptions.
 - **LLM** (`llm`): Uses a Large Language Model to select the most appropriate candidate given the mention and its context.
 
@@ -143,7 +143,7 @@ for result in results:
 
 ---
 
-## Changing the Knowledge Source
+## Changing the Knowledge Base
 
 The same disambiguation strategy can be used with different knowledge bases.
 
