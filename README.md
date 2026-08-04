@@ -64,6 +64,7 @@ from kbel.core import Mention, EntityType
 
 kbel = KBEL("wikidata")
 
+from kbel.disambiguators.naive import NaiveDisambiguator
 kbel.disambiguator = Disambiguator("naive")
 
 mention = Mention(
@@ -89,6 +90,7 @@ for label, description, entity in results:
 > ```
 
 ```python
+from kbel.disambiguators.similarity import SimilarityDisambiguator
 kbel.disambiguator = Disambiguator("sim")
 
 results = kbel.link(mention)
@@ -118,6 +120,7 @@ model = ChatOpenAI(
     api_key=os.environ["LLM_API_KEY"]
 )
 
+from kbel.disambiguators.llm import LLM_Disambiguator
 kbel.disambiguator = Disambiguator(
     "llm",
     model=model
@@ -159,8 +162,9 @@ for result in results:
 
 KBEL is **extensible**. New plugins can be added by subclassing:
 
-- `KnowledgeSource`
 - `Disambiguator`
+- `Search` from `kif_lib`
+
 
 Both components are automatically registered and can be instantiated by name.
 

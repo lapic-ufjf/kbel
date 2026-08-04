@@ -14,7 +14,7 @@ try:
     from sentence_transformers import SentenceTransformer
 except ImportError as err:
     raise ImportError(
-        f'{__name__} requires sentence_transformers') from err
+        f'{__name__} requires sentence_transformers: pip install sentence-transformers') from err
 
 try:
     from sklearn.metrics.pairwise import (cosine_similarity,
@@ -56,7 +56,7 @@ class SimilarityDisambiguator(Disambiguator, strategy_name='sim'):
         _model (SentenceTransformer): The embedding model used to encode
             the label and candidates.
         _similarity_fn (Callable[[np.ndarray, np.ndarray], float]):
-            Function to compute similarity between embeddings.
+            Function to compute similarity between embeddings (default: cosine).
 
     Example:
         >>> disamb = SimilarityDisambiguator('sim', model_name='all-MiniLM-L6-v2')

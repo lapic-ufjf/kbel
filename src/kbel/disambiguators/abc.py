@@ -3,8 +3,8 @@
 
 import logging
 from abc import abstractmethod
-from typing import (Any, AsyncIterator, ClassVar, Final, Iterator,
-                    Tuple, TypeVar)
+from typing import (Any, AsyncIterator, ClassVar, Final,
+                    Tuple)
 
 from kif_lib import Entity, KIF_Object, Property, Item
 
@@ -13,9 +13,6 @@ from kbel.core.candidate import Candidate
 
 LOG = logging.getLogger(__name__)
 
-T = TypeVar("T", bound=Entity)
-
-
 class Disambiguator:
     """Base class for entity disambiguators.
 
@@ -23,10 +20,10 @@ class Disambiguator:
     logic to select the correct entity among a list of candidates.
 
     Parameters:
-        strategy_name (str): Name of the disambiguation plugin.
+        strategy_name (str): Name of the disambiguation strategy plugin.
     """
 
-    #: Name of the disambiguation plugin.
+    #: Name of the disambiguation strategy plugin.
     strategy_name: ClassVar[str]
 
     #: Registry of all available disambiguator plugins.
@@ -104,11 +101,11 @@ class Disambiguator:
         limit: int = 10,
         *args: Any,
         **kwargs: Any,
-    ) -> AsyncIterator[Tuple[str, str, T]]:
+    ) -> AsyncIterator[Tuple[str, str, Entity]]:
         """Asynchronously disambiguates a list of candidates.
 
         Args:
-            label (str): Label to disambiguate.
+            mention (Mention): The mention to disambiguate.
             candidates (list[Candidate]): Candidate entities.
             limit (int, optional): Maximum number of candidates to return. Defaults to 10.
 
@@ -117,18 +114,22 @@ class Disambiguator:
         """
         results = self._disambiguate(mention, candidates, limit, *args, **kwargs)
         for label, description, entity in results:
-            yield (mention.label, description, cls(iri=entity)) # type: ignore
+            yield (label, description, entity)
 
 
     @abstractmethod
-    def _disambiguate(self, 
+    def _disambiguate(
+        self, 
         mention: Mention, 
-        candidates: list[Candidate], limit: int, *args,
-        **kwargs) -> list[Tuple[str, str, str]]:
+        candidates: list[Candidate], 
+        limit: int, 
+        *args: Any,
+        **kwargs: Any
+    ) -> list[Tuple[str, str, str]]:
         """Core disambiguation logic to be implemented by subclasses.
 
         Args:
-            label (str): Label to disambiguate.
+            mention (Mention): The mention to disambiguate.
             candidates (list[Candidate]): List of candidate entities.
             limit (int): Maximum number of results to return.
 

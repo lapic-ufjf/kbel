@@ -36,7 +36,7 @@ class KBEL:
     @knowledge_base.setter
     def knowledge_base(self, value: str | Search) -> None:
         if isinstance(value, str):
-            value = Search(value, limit= self._search_limit)
+            value = Search(value, limit=self._search_limit)
 
         self._knowledge_base = value
 
@@ -49,7 +49,7 @@ class KBEL:
         self._disambiguator = value
 
 
-    def __init__(self, knowledge_base: str, search_limit = 10, **kwargs):
+    def __init__(self, knowledge_base: str, search_limit=10, **kwargs):
         self._search_limit = search_limit
         self._knowledge_base = Search(
             knowledge_base,
@@ -58,7 +58,18 @@ class KBEL:
         )
         self._disambiguator = None
 
-    def candidates_lookup(self, mention: Mention) -> list[Candidate]:
+    def candidates_lookup(self, mention: Mention, limit: int = None) -> list[Candidate]:
+        """Fetches candidate entities from the knowledge base for a given mention.
+        
+        Args:
+            mention (Mention): The mention to look up candidates for.
+            limit (int, optional): Maximum number of candidates to retrieve.
+                Defaults to the instance's search limit.
+        """
+
+        if limit is None or limit <= 0:
+            limit = self._search_limit
+
         @staticmethod
         def _safe_next(it: Iterator) -> Iterator:
                 """Safely iterate over an iterator, skipping errors."""
@@ -80,14 +91,14 @@ class KBEL:
         
        
         if mention.entity_type is EntityType.ITEM:
-            found_candidates =  self._knowledge_base.item_descriptor(search=mention.label)
+            found_candidates =  self._knowledge_base.item_descriptor(search=mention.label, limit=limit)
         elif mention.entity_type is EntityType.PROPERTY:
-            found_candidates =  self._knowledge_base.property_descriptor(search=mention.label)
+            found_candidates =  self._knowledge_base.property_descriptor(search=mention.label, limit=limit)
         else:
             from itertools import chain
             found_candidates = chain(
-                self._knowledge_base.item_descriptor(search=mention.label),
-                self._knowledge_base.property_descriptor(search=mention.label),
+                self._knowledge_base.item_descriptor(search=mention.label, limit=limit),
+                self._knowledge_base.property_descriptor(search=mention.label, limit=limit),
             )
 
         candidates = []
@@ -105,14 +116,28 @@ class KBEL:
     def link(
         self,
         mention: Mention,
+        search_limit: int = None,
         limit: int = 10,
         *args: Any,
         **kwargs: Any,
     ) -> list[tuple[str, str, Entity]]:
+
+        """Links a mention to the most relevant entities in the knowledge base.
+
+        Args:
+            mention (Mention): The mention to link.
+            search_limit (int, optional): Maximum number of candidates to retrieve from the knowledge base.
+                Defaults to the instance's search limit.
+            limit (int, optional): Maximum number of top candidates to return after disambiguation.
+                Defaults to 10.
+        """
         if self.disambiguator is None:
             raise RuntimeError("No disambiguator has been configured.")
 
-        candidates = self.candidates_lookup(mention)
+        if search_limit is None or search_limit <= 0:
+            search_limit = self._search_limit
+
+        candidates = self.candidates_lookup(mention, limit=search_limit)
 
         return self._disambiguator.disambiguate(
             mention,

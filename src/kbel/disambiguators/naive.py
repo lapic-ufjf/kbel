@@ -50,7 +50,14 @@ class NaiveDisambiguator(Disambiguator, strategy_name='naive'):
 
         if limit > 1:
             LOG.debug('Limit has no effect here. This method always returns the top 1 candidate.')
+        for candidate in candidates:
+           if candidate.label.lower() == mention.label.lower():
+                label = candidate.label
+                description = candidate.description
+                iri = candidate.iri
+                return [(label, description, iri)]
+           
         label = candidates[0].label
         description = candidates[0].description
         iri = candidates[0].iri
-        return [(label, description, iri)] # type: ignore
+        return [(label, description, iri)]
