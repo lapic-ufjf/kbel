@@ -24,15 +24,15 @@ Input:
 
     Candidates:
         ID: C101
-        Label: Paris
+        Term: Paris
         Description: capital city and largest city of France
 
         ID: C102
-        Label: Paris Saint-Germain FC
+        Term: Paris Saint-Germain FC
         Description: association football club in Paris, France
 
         ID: C103
-        Label: Paris
+        Term: Paris
         Description: genus of plants
 
 Output: C101
@@ -43,19 +43,19 @@ Input:
 
     Candidates:
         ID: C101
-        Label: James Brown
+        Term: James Brown
         Description: American musician (1933–2006)
 
         ID: C102
-        Label: James H. Brown
+        Term: James H. Brown
         Description: American biologist and academic
 
         ID: C103
-        Label: James Brown
+        Term: James Brown
         Description: American-born painter active in Paris and Oaxaca (Mexico) (1951-2020)
 
         ID: C104
-        Label: Joao
+        Term: Joao
         Description: researcher
 
 Output: C101, C102, C103
@@ -66,11 +66,11 @@ Input:
 
     Candidates:
         ID: D101
-        Label: Argentina
+        Term: Argentina
         Description: state in South America
 
         ID: D102
-        Label: Argentina
+        Term: Argentina
         Description: genus of plants
 
 Output:"""

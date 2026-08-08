@@ -6,6 +6,7 @@ from kif_lib.typing import Any, Iterator
 from kif_lib.search import Search
 from kbel.core.mention import Mention, EntityType
 from kbel.core.candidate import Candidate
+from kbel.core.results import LinkResult
 from kbel.disambiguators import Disambiguator
 
 LOG = logging.getLogger(__name__)
@@ -49,14 +50,15 @@ class KBEL:
         self._disambiguator = value
 
 
-    def __init__(self, knowledge_base: str, search_limit=10, **kwargs):
+    def __init__(self, 
+                 knowledge_base: str, disambiguator: Disambiguator | None = None, search_limit=10, **kwargs):
         self._search_limit = search_limit
         self._knowledge_base = Search(
             knowledge_base,
             limit=self._search_limit,
             **kwargs
         )
-        self._disambiguator = None
+        self._disambiguator = disambiguator
 
     def candidates_lookup(self, mention: Mention, limit: int = None) -> list[Candidate]:
         """Fetches candidate entities from the knowledge base for a given mention.
@@ -91,14 +93,14 @@ class KBEL:
         
        
         if mention.entity_type is EntityType.ITEM:
-            found_candidates =  self._knowledge_base.item_descriptor(search=mention.label, limit=limit)
+            found_candidates =  self._knowledge_base.item_descriptor(search=mention.term, limit=limit)
         elif mention.entity_type is EntityType.PROPERTY:
-            found_candidates =  self._knowledge_base.property_descriptor(search=mention.label, limit=limit)
+            found_candidates =  self._knowledge_base.property_descriptor(search=mention.term, limit=limit)
         else:
             from itertools import chain
             found_candidates = chain(
-                self._knowledge_base.item_descriptor(search=mention.label, limit=limit),
-                self._knowledge_base.property_descriptor(search=mention.label, limit=limit),
+                self._knowledge_base.item_descriptor(search=mention.term, limit=limit),
+                self._knowledge_base.property_descriptor(search=mention.term, limit=limit),
             )
 
         candidates = []
@@ -120,7 +122,7 @@ class KBEL:
         limit: int = 10,
         *args: Any,
         **kwargs: Any,
-    ) -> list[tuple[str, str, Entity]]:
+    ) -> list[LinkResult]:
 
         """Links a mention to the most relevant entities in the knowledge base.
 
@@ -139,10 +141,11 @@ class KBEL:
 
         candidates = self.candidates_lookup(mention, limit=search_limit)
 
-        return self._disambiguator.disambiguate(
-            mention,
-            candidates,
-            limit,
-            *args,
-            **kwargs,
-        )
+        return [
+            LinkResult.from_disambiguation(mention, result)
+            for result in self._disambiguator.disambiguate(mention,
+                        candidates,
+                        limit,
+                        *args,
+                        **kwargs,)
+        ]

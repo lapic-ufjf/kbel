@@ -6,6 +6,7 @@ from textwrap import dedent
 from typing import Any, Literal, Optional, Tuple, TYPE_CHECKING
 
 from kbel.core.mention import Mention
+from kbel.core.results import DisambiguationResult
 
 from ..abc import Candidate, Disambiguator
 from .constants import EL_DEFAULT_EXAMPLES, EL_DEFAULT_PROMPT
@@ -106,7 +107,7 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
         limit=100,
         *args,
         **kwargs,
-    ) -> list[Tuple[str, str, str]]:
+    ) -> list[DisambiguationResult]:
         """Disambiguates a mention using the LLM.
 
         Args:
@@ -118,11 +119,10 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
                 - textual_context (str, optional): Optional context to guide the LLM.
 
         Returns:
-            list[Tuple[str, str, str]]: List of tuples with (label, description, iri)
-                of the selected candidates.
+            list[DisambiguationResult]: List of disambiguation results.
         """
 
-        assert mention.label, 'Mention label can not be undefined.'
+        assert mention.term, 'Mention term can not be undefined.'
 
         assert mention.text, 'Mention text can not be undefined.'
 
@@ -136,7 +136,7 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
             mention: Mention,
             candidates: list[Candidate],
             limit: Optional[int] = None
-    ) -> list[Tuple[str, str, str]]:
+    ) -> list[DisambiguationResult]:
         """Internal method that executes the LLM-based disambiguation.
 
         Constructs a prompt with candidates and optional context, invokes the LLM,
@@ -148,22 +148,21 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
             limit (Optional[int]): Maximum number of results to return.
 
         Returns:
-            list[Tuple[str, str, str]]: List of tuples containing the label,
-                description, and IRI of the top candidates.
+            list[DisambiguationResult]: List of disambiguation results.
 
         Raises:
-            ValueError: If the LLM cannot disambiguate the label among the candidates.
+            ValueError: If the LLM cannot disambiguate the term among the candidates.
         """
-        assert candidates and len(candidates) > 0, f'No candidates to disambiguate the label `{mention.label}`'
+        assert candidates and len(candidates) > 0, f'No candidates to disambiguate the label `{mention.term}`'
         try:
             c_prompt = ''
             for candidate in candidates:
                 c_prompt += f'        ID: {candidate.id}'
 
                 c_label = candidate.label
-                if mention.label:
+                if mention.term:
                     c_label = c_label.strip()
-                    c_prompt += f'\n        Label: {c_label}'
+                    c_prompt += f'\n        Term: {c_label}'
                 description = candidate.description
                 if description:
                     description = description.strip()
@@ -201,7 +200,7 @@ Output:""")
             entity_ids = chain.invoke({
                 'context': mention.context,
                 'sentence': mention.text,
-                'term': mention.label,
+                'term': mention.term,
                 'candidates': c_prompt,
             })
             if entity_ids:
@@ -211,12 +210,12 @@ Output:""")
                         c_id = c.id
                         if c_id:
                             if entity_id == c_id:
-                                description = c.description
                                 disamb_entities.append(
-                                    (c.label, description, c.iri))
+                                    DisambiguationResult(iri=c.iri))
+                                
                 return disamb_entities[:limit] if limit else disamb_entities
-            raise ValueError(f'Could not disambiguate label `{mention.label}` among the candidates.')
+            raise ValueError(f'Could not disambiguate the term `{mention.term}` among the candidates.')
 
         except Exception as e:
-            logging.warning(f'Exceptions occured while disambiguating label `{mention.label}`: {e}')
+            logging.warning(f'Exceptions occured while disambiguating the term `{mention.term}`: {e}')
             raise e

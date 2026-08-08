@@ -7,6 +7,7 @@ from typing import Callable, Literal, Tuple
 import numpy as np
 
 from kbel.core.mention import Mention
+from kbel.core.results import DisambiguationResult
 
 from .abc import Candidate, Disambiguator
 
@@ -48,7 +49,7 @@ class SimilarityDisambiguator(Disambiguator, strategy_name='sim'):
     """Disambiguator that selects candidates based on embedding similarity.
 
     This disambiguator uses a sentence embedding model to compute vector
-    representations of the input label and candidate entities. It then
+    representations of the input term and candidate entities. It then
     ranks the candidates according to a chosen similarity metric and
     returns the top results.
 
@@ -89,29 +90,28 @@ class SimilarityDisambiguator(Disambiguator, strategy_name='sim'):
 
 
     def _disambiguate(self, mention: Mention, candidates: list[Candidate], limit: int, *args,
-                      **kwargs) -> list[Tuple[str, str, str]]:
+                      **kwargs) -> list[DisambiguationResult]:
 
-        """Disambiguates a label using embedding similarity.
+        """Disambiguates a term using embedding similarity.
 
-        This method encodes the input label and all candidate labels and
+        This method encodes the input term and all candidate terms and
         descriptions using the embedding model, computes similarity scores,
         and returns the top candidates according to the chosen similarity metric.
 
         Args:
-            label (str): The term or sentence to disambiguate.
+            mention (Mention): The mention to disambiguate.
             candidates (list[Candidate]): List of candidate entities.
             limit (int): Maximum number of top candidates to return.
             *args: Additional positional arguments.
             **kwargs: Additional keyword arguments, e.g., extra context.
 
         Returns:
-            list[Tuple[str, str, str]]: List of tuples containing the label,
-                description, and IRI of the top candidates.
+            list[DisambiguationResult]: List of disambiguation results.
         """
 
-        assert candidates, f"No candidates to disambiguate mention `{mention.label}`"
+        assert candidates, f"No candidates to disambiguate mention `{mention.term}`"
 
-        sentence = mention.label
+        sentence = mention.term
         sentence_param = mention.text
         if sentence_param:
             sentence = f'{sentence} {sentence_param}'
@@ -134,10 +134,10 @@ class SimilarityDisambiguator(Disambiguator, strategy_name='sim'):
             top = sims[:limit]
 
             return [
-                (c.label, c.description, c.iri)
-                for _, c in top
+                DisambiguationResult(iri=c.iri, score=score)
+                for score, c in top
             ] # type: ignore
 
         except Exception as e:
-            LOG.warning(f"Error in similarity disambiguation for `{mention.label}`: {e}")
+            LOG.warning(f"Error in similarity disambiguation for `{mention.term}`: {e}")
             raise e

@@ -20,8 +20,8 @@ class Mention:
     Parameters
     ----------
 
-    label:
-        The label of the mention.
+    term:
+        The term of the mention.
     text:
         The surface form of the mention.
 
@@ -44,7 +44,7 @@ class Mention:
         Arbitrary user-defined metadata.
     """
 
-    label: str
+    term: str
     text: str
     context: str | None = None
 

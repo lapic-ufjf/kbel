@@ -10,6 +10,7 @@ from kif_lib import Entity, KIF_Object, Property, Item
 
 from kbel.core.mention import EntityType, Mention
 from kbel.core.candidate import Candidate
+from kbel.core.results import DisambiguationResult
 
 LOG = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class Disambiguator:
         limit: int = 10,
         *args: Any,
         **kwargs: Any,
-    ) -> list[Tuple[str, str, Entity]]:
+    ) -> list[DisambiguationResult]:
         """Synchronously disambiguates a list of candidates.
 
         Args:
@@ -79,20 +80,12 @@ class Disambiguator:
             limit (int, optional): Maximum number of candidates to return. Defaults to 10.
 
         Returns:
-            list[Tuple[str, str, T]]: List of tuples with label, description, and entity instance.
+            list[DisambiguationResult]: List of disambiguation results.
         """
         assert len(candidates) > 0, 'No candidates to disambiguate'
-        results = self._disambiguate(mention, candidates, limit, *args, **kwargs)
-        disamb_entities = []
-        if results:
-            for result in results:
-                _label, description, entity = result
-                if mention.entity_type == EntityType.ITEM:
-                    entity = Item(iri=entity)
-                elif mention.entity_type == EntityType.PROPERTY:
-                    entity = Property(iri=entity)
-                disamb_entities.append((_label, description, entity)) # type: ignore
-        return disamb_entities
+        
+        return self._disambiguate(mention, candidates, limit, *args, **kwargs)
+
 
     async def adisambiguate(
         self,
@@ -101,7 +94,7 @@ class Disambiguator:
         limit: int = 10,
         *args: Any,
         **kwargs: Any,
-    ) -> AsyncIterator[Tuple[str, str, Entity]]:
+    ) -> AsyncIterator[DisambiguationResult]:
         """Asynchronously disambiguates a list of candidates.
 
         Args:
@@ -110,11 +103,12 @@ class Disambiguator:
             limit (int, optional): Maximum number of candidates to return. Defaults to 10.
 
         Yields:
-            AsyncIterator[Tuple[str, str, T]]: Tuples with label, description, and entity instance.
+            AsyncIterator[DisambiguationResult]: Disambiguation results.
         """
-        results = self._disambiguate(mention, candidates, limit, *args, **kwargs)
-        for label, description, entity in results:
-            yield (label, description, entity)
+        results = self.disambiguate(mention, candidates, limit, *args, **kwargs)
+
+        for result in results:
+            yield result
 
 
     @abstractmethod
@@ -125,7 +119,7 @@ class Disambiguator:
         limit: int, 
         *args: Any,
         **kwargs: Any
-    ) -> list[Tuple[str, str, str]]:
+    ) -> list[DisambiguationResult]:
         """Core disambiguation logic to be implemented by subclasses.
 
         Args:
@@ -134,6 +128,6 @@ class Disambiguator:
             limit (int): Maximum number of results to return.
 
         Returns:
-            list[Tuple[str, str, str]]: Tuples of label, description, and entity identifier.
+            list[DisambiguationResult]: List of disambiguation results.
         """
         ...

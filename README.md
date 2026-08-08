@@ -68,15 +68,15 @@ from kbel.disambiguators.naive import NaiveDisambiguator
 kbel.disambiguator = Disambiguator("naive")
 
 mention = Mention(
-    label="Python",
+    term="Python",
     text="Python is used for coding.",
     entity_type=EntityType.ITEM,
 )
 
 results = kbel.link(mention)
 
-for label, description, entity in results:
-    print(label, description, entity)
+for result in results:
+    print(result)
 ```
 
 ---
@@ -128,7 +128,7 @@ kbel.disambiguator = Disambiguator(
 
 results = kbel.link(
     Mention(
-        label="Python",
+        term="Python",
         text="Python is used for coding.",
         entity_type=EntityType.ITEM,
         context="""

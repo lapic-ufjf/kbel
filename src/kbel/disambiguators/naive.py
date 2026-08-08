@@ -5,6 +5,7 @@ import logging
 from typing import Tuple
 
 from kbel.core.mention import Mention
+from kbel.core.results import DisambiguationResult
 
 from .abc import Candidate, Disambiguator
 
@@ -24,7 +25,7 @@ class NaiveDisambiguator(Disambiguator, strategy_name='naive'):
         ...     {"label": "Python", "description": "Programming language", "iri": "https://www.wikidata.org/wiki/Q28865"}
         ... ]
         >>> disamb._disambiguate("Python", candidates, limit=1)
-        [('Python', 'Programming language', 'https://www.wikidata.org/wiki/Q28865')]
+        [DisambiguationResult(iri='https://www.wikidata.org/wiki/Q28865', score=1.0)]
     """
 
     def _disambiguate(
@@ -33,7 +34,7 @@ class NaiveDisambiguator(Disambiguator, strategy_name='naive'):
         candidates: list[Candidate],
         limit: int,
         *args,
-        **kwargs) -> list[Tuple[str, str, str]]:
+        **kwargs) -> list[DisambiguationResult]:
         """Returns the first candidate from the list.
 
         Args:
@@ -44,20 +45,13 @@ class NaiveDisambiguator(Disambiguator, strategy_name='naive'):
             **kwargs: Additional keyword arguments.
 
         Returns:
-            list[Tuple[str, str, str]]: A list containing a single tuple with
-                the label, description, and IRI of the first candidate.
+            list[DisambiguationResult]: A list containing a single disambiguation result.
         """
 
         if limit > 1:
             LOG.debug('Limit has no effect here. This method always returns the top 1 candidate.')
         for candidate in candidates:
-           if candidate.label.lower() == mention.label.lower():
-                label = candidate.label
-                description = candidate.description
-                iri = candidate.iri
-                return [(label, description, iri)]
+           if candidate.label.lower() == mention.term.lower():
+                return [DisambiguationResult(iri=candidate.iri)]
            
-        label = candidates[0].label
-        description = candidates[0].description
-        iri = candidates[0].iri
-        return [(label, description, iri)]
+        return [DisambiguationResult(iri=candidates[0].iri)]
