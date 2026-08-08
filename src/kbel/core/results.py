@@ -1,3 +1,6 @@
+# Copyright 2026 LApIC
+# SPDX-License-Identifier: Apache-2.0
+
 from kbel.core.mention import Mention, EntityType
 from dataclasses import dataclass
 
