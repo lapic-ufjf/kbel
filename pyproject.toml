@@ -53,6 +53,13 @@ llm = [
     "langchain-ollama>=0.3,<0.4",
 ]
 
+pdf = [
+    "langchain-community", 
+    "langchain-text-splitters", 
+    "pymupdf", 
+    "pypdf"
+]
+
 dev = [
     "black",
     "isort",
@@ -61,6 +68,8 @@ dev = [
     "python-dotenv",
     "ruff",
 ]
+
+openie = ["stanford_openie"]
 
 [project.urls]
 Homepage = "https://github.com/lapic-ufjf/kbel"

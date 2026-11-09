@@ -9,8 +9,10 @@ from kif_lib.search import Search
 from kbel.search import WikidataVDB_Search
 from kbel.core.mention import Mention, EntityType
 from kbel.core.candidate import Candidate
+from kbel.core.triple import Triple
 from kbel.core.results import LinkResult
 from kbel.disambiguators import Disambiguator
+from kbel.extractors import TripleExtractor
 
 LOG = logging.getLogger(__name__)
 
@@ -19,6 +21,7 @@ class KBEL:
     _knowledge_base: Search
     _search_limit = 10
     _disambiguator: Disambiguator | None
+    _extractor: TripleExtractor | None
 
     @property
     def search_limit(self) -> int:
@@ -54,13 +57,26 @@ class KBEL:
             value = Disambiguator(value)
         self._disambiguator = value
 
+    @property
+    def extractor(self) -> TripleExtractor | None:
+        return self._extractor
+
+    @extractor.setter
+    def extractor(self, value: TripleExtractor | str | None) -> None:
+        if isinstance(value, str):
+            value = TripleExtractor(value)
+        self._extractor = value
+
 
     def __init__(self, 
-                 knowledge_base: Search | str, disambiguator: Disambiguator | str | None = None, search_limit=10, **kwargs):
+                 knowledge_base: Search | str, disambiguator: Disambiguator | str | None = None, extractor: TripleExtractor | str | None = None, search_limit=10, **kwargs):
+        assert knowledge_base, 'Knowledge base can not be undefined.'
         self._search_limit = search_limit
         self.knowledge_base = knowledge_base
         if disambiguator is not None:
             self.disambiguator = disambiguator
+        if extractor is not None:
+            self.extractor = extractor
 
     def candidates_lookup(self, mention: Mention, limit: int = None) -> list[Candidate]:
         """Fetches candidate entities from the knowledge base for a given mention.
@@ -151,4 +167,44 @@ class KBEL:
                 limit,
                 *args,
                 **kwargs)
+        ]
+    
+    def extract(
+            self, 
+            text: str, 
+            *args: Any, 
+            **kwargs: Any
+            ) -> list[Triple]:
+        """Extracts subject-predicate-object triples from a text.
+
+        Args:
+            text (str): Input text.
+        """
+        if self._extractor is None:
+            raise RuntimeError("No extractor has been configured.")
+        return self._extractor.extract(text, *args, **kwargs)
+
+    def extract_and_link(
+        self,
+        text: str,
+        context: str | None = None,
+        language: str | None = None,
+        search_limit: int = None,
+        limit: int = 10,
+        **kwargs: Any,
+    ) -> list[tuple[Triple, tuple[list[LinkResult], list[LinkResult], list[LinkResult]]]]:
+        """Extracts triples from a text and links subject, predicate and object.
+
+        Returns:
+            One entry per triple: (triple, (subject_links, predicate_links, object_links)).
+        """
+        triples = self.extract(text, **kwargs)
+        mentions = TripleExtractor.build_mentions(
+            triples, text, context=context, language=language)
+
+        return [
+            (triple, tuple(
+                self.link(m, search_limit=search_limit, limit=limit)
+                for m in triple_mentions))
+            for triple, triple_mentions in zip(triples, mentions)
         ]

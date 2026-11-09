@@ -203,17 +203,15 @@ Output:""")
                 'term': mention.term,
                 'candidates': c_prompt,
             })
-            if entity_ids:
-                disamb_entities = []
-                for entity_id in entity_ids:
-                    for c in candidates:
-                        c_id = c.id
-                        if c_id:
-                            if entity_id == c_id:
-                                disamb_entities.append(
-                                    DisambiguationResult(candidate=c))
-                                
+            by_id = {c.id: c for c in candidates if c.id}
+            disamb_entities = [
+                DisambiguationResult(candidate=by_id[i])
+                for i in entity_ids if i in by_id
+            ]
+            if disamb_entities:
                 return disamb_entities[:limit] if limit else disamb_entities
+            LOG.warning('term=%r raw_ids=%r candidate_ids=%r',
+                        mention.term, entity_ids, list(by_id)[:5])
             raise ValueError(f'Could not disambiguate the term `{mention.term}` among the candidates.')
 
         except Exception as e:
