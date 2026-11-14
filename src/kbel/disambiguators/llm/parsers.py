@@ -23,7 +23,7 @@ class CommaSeparatedListOutputParserSet(CommaSeparatedListOutputParser):
             inside_uri = False
 
             for part in text.split(','):
-                part = part.strip()
+                part = part.strip().strip('`"\'')
                 if part.startswith('http://') or part.startswith('https://'):
                     if inside_uri:
                         parts.append(buffer.strip())
@@ -35,6 +35,6 @@ class CommaSeparatedListOutputParserSet(CommaSeparatedListOutputParser):
                     parts.append(part)
             if buffer:
                 parts.append(buffer.strip())
-            return list(dict.fromkeys(parts))
+            return [p for p in dict.fromkeys(parts) if p]
         except Exception as e:
             raise e
