@@ -1,9 +1,10 @@
+# Copyright 2026 LApIC
+# SPDX-License-Identifier: Apache-2.0
 
 import logging
 import re
 from typing import Any
 
-from kif_lib import KIF_Object
 from kbel.core.triple import Triple
 
 from .abc import TripleExtractor
@@ -18,11 +19,19 @@ class MREBELTripleExtractor(
     """Triple extractor based on the multilingual mREBEL model.
 
     Uses Babelscape/mrebel-large to extract subject-predicate-object
-    triples from text.
+    triples from text. Generation settings and output parsing follow the
+    reference usage published by the authors
+    (https://github.com/Babelscape/rebel and the
+    Babelscape/mrebel-large model card).
 
     Unlike Stanford OpenIE, this extractor does not require Java or
     an external server. The model runs directly through PyTorch and
     Hugging Face Transformers.
+
+    Note:
+        The mREBEL model weights are distributed by Babelscape under
+        CC BY-NC-SA 4.0 (non-commercial), independently of this
+        library's license.
 
     Example:
         >>> extractor = TripleExtractor("mrebel")
@@ -37,6 +46,18 @@ class MREBELTripleExtractor(
     DEFAULT_SOURCE_LANGUAGE = "en_XX"
     TARGET_LANGUAGE = "tp_XX"
 
+    # Languages mREBEL was trained on (mBART-50 codes). ca_XX and el_EL
+    # are not part of mBART-50 pretraining: the model card registers them
+    # through a tokenizer workaround (see `_set_source_language`).
+    SUPPORTED_LANGUAGES = (
+        "ar_AR", "ca_XX", "de_DE", "el_EL", "en_XX", "es_XX", "fr_XX",
+        "hi_IN", "it_IT", "ja_XX", "ko_KR", "nl_XX", "pl_PL", "pt_XX",
+        "ru_RU", "sv_SE", "vi_VN", "zh_CN",
+    )
+
+    # Language code tokens (e.g. tp_XX, en_XX, el_EL) in generated text.
+    _LANG_CODE = re.compile(r"\b[a-z]{2}_[A-Z]{2}\b")
+
     def __init__(
         self,
         strategy_name: str,
@@ -46,6 +67,7 @@ class MREBELTripleExtractor(
         max_input_length: int = 256,
         max_output_length: int = 256,
         num_beams: int = 3,
+        num_return_sequences: int | None = None,
         split_sentences: bool = True,
         batch_size: int = 8,
         graph: bool = False,
@@ -62,6 +84,9 @@ class MREBELTripleExtractor(
             max_output_length: Maximum number of generated tokens.
             num_beams: Number of beams used during generation. Higher
                 values yield more (but noisier) triples.
+            num_return_sequences: How many of the beams are parsed and
+                merged (deduplicated). Defaults to `num_beams`, as in the
+                reference code; use 1 to keep only the best sequence.
             split_sentences: Run the model on each sentence separately.
                 mREBEL tends to emit only the most salient relations of
                 a long input, so splitting usually yields more triples.
@@ -92,6 +117,12 @@ class MREBELTripleExtractor(
         if num_beams < 1:
             raise ValueError("num_beams must be a positive integer.")
 
+        if num_return_sequences is None:
+            num_return_sequences = num_beams
+        if not 1 <= num_return_sequences <= num_beams:
+            raise ValueError(
+                "num_return_sequences must be between 1 and num_beams.")
+
         if batch_size < 1:
             raise ValueError("batch_size must be a positive integer.")
 
@@ -101,6 +132,7 @@ class MREBELTripleExtractor(
         self._max_input_length = max_input_length
         self._max_output_length = max_output_length
         self._num_beams = num_beams
+        self._num_return_sequences = num_return_sequences
         self._split_sentences = split_sentences
         self._batch_size = batch_size
 
@@ -122,9 +154,10 @@ class MREBELTripleExtractor(
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            src_lang=source_language,
+            src_lang=self.DEFAULT_SOURCE_LANGUAGE,
             tgt_lang=self.TARGET_LANGUAGE,
         )
+        self._set_source_language(source_language)
 
         self._model = AutoModelForSeq2SeqLM.from_pretrained(
             model_name
@@ -151,10 +184,32 @@ class MREBELTripleExtractor(
 
         LOG.info("mREBEL model successfully loaded.")
 
-    # -- output parsing -------------------------------------------------
+    def _set_source_language(self, language: str) -> None:
+        """Make the tokenizer prefix inputs with `language`'s code token.
 
-    
+        Codes known to mBART-50 are set normally. Codes that only exist
+        in mREBEL's vocabulary (ca_XX, el_EL) need the workaround from
+        the model card, since `src_lang=` raises KeyError for them.
+        """
+        tok = self._tokenizer
+        known = getattr(tok, "lang_code_to_id", None) or {}
 
+        if language in known:
+            tok.src_lang = language
+        elif tok.convert_tokens_to_ids(language) not in (
+                None, tok.unk_token_id):
+            tok._src_lang = language
+            tok.cur_lang_code_id = tok.convert_tokens_to_ids(language)
+            tok.set_src_lang_special_tokens(language)
+        else:
+            raise ValueError(
+                f"Unknown source language {language!r}. mREBEL supports: "
+                f"{', '.join(self.SUPPORTED_LANGUAGES)}.")
+
+        if language not in self.SUPPORTED_LANGUAGES:
+            LOG.warning(
+                "mREBEL was not trained on %r; results may be poor.",
+                language)
 
     @staticmethod
     def _parse_triplets(generated_text: str) -> list[dict[str, str]]:
@@ -165,15 +220,15 @@ class MREBELTripleExtractor(
             <triplet> subj <subj_type> obj1 <obj_type> rel1 <subj_type> obj2 <obj_type> rel2 ...
 
         i.e. after a relation, a new type tag starts another object of
-        the same subject.
+        the same subject. Equivalent to `extract_triplets_typed` from the
+        model card, except that incomplete triplets are always dropped.
         """
         text = (
             generated_text.replace("<s>", " ")
             .replace("</s>", " ")
             .replace("<pad>", " ")
-            .replace("tp_XX", " ")
-            .replace("en_XX", " ")
         )
+        text = MREBELTripleExtractor._LANG_CODE.sub(" ", text)
 
         triplets = []
         subject = object_ = relation = ""
@@ -245,12 +300,14 @@ class MREBELTripleExtractor(
             return_tensors="pt",
         ).to(self._device)
 
+        # Same generation settings as the reference code.
         with self._torch.inference_mode():
             generated = self._model.generate(
-                **inputs,
+                inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
                 max_length=self._max_output_length,
                 num_beams=self._num_beams,
-                num_return_sequences=self._num_beams,
+                num_return_sequences=self._num_return_sequences,
                 length_penalty=0,
                 forced_bos_token_id=None,
                 decoder_start_token_id=self._decoder_start_token_id,

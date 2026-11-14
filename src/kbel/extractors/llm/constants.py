@@ -1,3 +1,6 @@
+# Copyright 2026 LApIC
+# SPDX-License-Identifier: Apache-2.0
+
 TE_DEFAULT_PROMPT = """You are an information extraction system. Given a text, extract all factual subject-predicate-object triples expressed in it.
 
 Rules:

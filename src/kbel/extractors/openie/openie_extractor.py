@@ -1,3 +1,6 @@
+# Copyright 2026 LApIC
+# SPDX-License-Identifier: Apache-2.0
+
 import atexit
 import json
 import logging
