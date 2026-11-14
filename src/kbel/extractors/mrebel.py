@@ -46,16 +46,12 @@ class MREBELTripleExtractor(
     DEFAULT_SOURCE_LANGUAGE = "en_XX"
     TARGET_LANGUAGE = "tp_XX"
 
-    # Languages mREBEL was trained on (mBART-50 codes). ca_XX and el_EL
-    # are not part of mBART-50 pretraining: the model card registers them
-    # through a tokenizer workaround (see `_set_source_language`).
     SUPPORTED_LANGUAGES = (
         "ar_AR", "ca_XX", "de_DE", "el_EL", "en_XX", "es_XX", "fr_XX",
         "hi_IN", "it_IT", "ja_XX", "ko_KR", "nl_XX", "pl_PL", "pt_XX",
         "ru_RU", "sv_SE", "vi_VN", "zh_CN",
     )
 
-    # Language code tokens (e.g. tp_XX, en_XX, el_EL) in generated text.
     _LANG_CODE = re.compile(r"\b[a-z]{2}_[A-Z]{2}\b")
 
     def __init__(

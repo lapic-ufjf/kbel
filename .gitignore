@@ -24,3 +24,7 @@ __pycache__/
 
 __pycache__/
 *.pyc
+
+# Stanford CoreNLP downloads (~500 MB; keep them in ~/.stanfordnlp_resources)
+stanford-corenlp-*.zip
+stanford-corenlp-*/

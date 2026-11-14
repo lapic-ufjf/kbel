@@ -69,7 +69,8 @@ dev = [
     "ruff",
 ]
 
-openie = ["stanford_openie"]
+# Only Java is needed: CoreNLP is driven through its HTTP server.
+openie = []
 
 [project.urls]
 Homepage = "https://github.com/lapic-ufjf/kbel"
@@ -81,3 +82,8 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: needs external services (e.g. Java + CoreNLP); skipped when unavailable",
+]
