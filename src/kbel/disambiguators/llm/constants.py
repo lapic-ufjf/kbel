@@ -9,13 +9,13 @@ Rules:
 
 1. Strict Matching: Only return a candidate ID if the context in the sentence explicitly aligns with the candidate's description.
 
-2. No Guessing: Do not infer or assume missing information. If the sentence lacks sufficient context, return nothing.
+2. Always Answer: You MUST always select at least one candidate. Never return an empty answer. If the context is limited, choose the candidate whose label and description are the closest semantic match to the term.
 
 3. Output Format:
 
 - if there’s a match, your response should be a list of comma separated IDs, eg: `C102, C103, C110` or `C102,C103,C110`
 
-- if there is no clear match respond an empty string. Do not include any extra explanations."""
+-  Do not include any extra explanations."""
 
 EL_DEFAULT_EXAMPLES = """\
 Input:
@@ -61,16 +61,16 @@ Input:
 Output: C101, C102, C103
 
 Input:
-    Sentence: "The capital of Brazil is Brasilia."
-    Term: "Brazil"
+    Sentence: "Marie Curie was born in Warsaw"
+    Term: "was born in"
 
     Candidates:
         ID: D101
-        Term: Argentina
-        Description: state in South America
+        Term: place of birth
+        Description: most specific known birth location of a person
 
         ID: D102
-        Term: Argentina
-        Description: genus of plants
+        Term: date of birth
+        Description: date on which the subject was born
 
-Output:"""
+Output: D101"""
