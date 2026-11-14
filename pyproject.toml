@@ -37,7 +37,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "kif-lib>=0.12,<0.13",
+    "kif-lib @ git+https://github.com/PUC-Behring-Institute-for-AI/kif.git",
     "numpy>=2.3,<3",
     "scikit-learn>=1.7,<2",
 ]
