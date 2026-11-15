@@ -28,10 +28,8 @@ class Disambiguator:
         strategy_name (str): Name of the disambiguation strategy plugin.
     """
 
-    #: Name of the disambiguation strategy plugin.
     strategy_name: ClassVar[str]
 
-    #: Registry of all available disambiguator plugins.
     registry: Final[dict[str, type['Disambiguator']]] = {}
 
     @classmethod

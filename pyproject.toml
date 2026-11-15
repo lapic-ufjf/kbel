@@ -71,6 +71,8 @@ dev = [
 
 # Only Java is needed: CoreNLP is driven through its HTTP server.
 openie = []
+relik = []
+kggen = ["kg-gen>=0.4"]
 
 mrebel = [
     "torch>=2",

@@ -230,3 +230,36 @@ def test_extract_and_link_passes_extractor_kwargs(scripted_search, tmp_path):
     kbel.disambiguator = Disambiguator('test-slow-sync', delay=0)
     kbel.extract_and_link('Alpha is one.', graph=True, graph_path=tmp_path / 'g.dot')
     assert (tmp_path / 'g.dot').exists()
+
+
+class Batched(TripleExtractor, strategy_name='test-batched'):
+    batch_size = 2
+
+    def __init__(self, strategy_name, **kwargs):
+        super().__init__(**kwargs)
+        self.batches: list[list[str]] = []
+
+    def _extract(self, text, prompt=None):
+        raise AssertionError('construct must use the batch')
+
+    def _extract_batch(self, texts, prompt=None):
+        self.batches.append(list(texts))
+        return [[Triple(t.split()[0], 'is', 'one')] for t in texts]
+
+
+def test_construct_extracts_sentences_in_batches(scripted_search):
+    e = TripleExtractor('test-batched')
+    kbel = KBEL('empty', disambiguator=Disambiguator('test-slow-sync', delay=0), extractor=e)
+    statements = list(kbel.construct('Alpha a. Beta b. Gamma c.'))
+    assert e.batches == [['Alpha a.', 'Beta b.'], ['Gamma c.']]
+    assert len(statements) == 1
+
+
+def test_default_batch_runs_texts_concurrently():
+    e = TripleExtractor('test-slow-extract', delay=0.2)
+    start = time.perf_counter()
+    result = asyncio.run(e.aextract_batch(['A.', 'B.', 'C.']))
+    assert result == [[Triple('A', 'is', 'slow')], [Triple('B', 'is', 'slow')],
+                      [Triple('C', 'is', 'slow')]]
+    assert time.perf_counter() - start < 0.5
+    assert e.extract_batch(['A.']) == [[Triple('A', 'is', 'slow')]]

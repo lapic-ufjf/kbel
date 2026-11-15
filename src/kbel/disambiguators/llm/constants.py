@@ -4,10 +4,11 @@
 EL_DEFAULT_PROMPT = """\
 You are a precise entity-linking assistant.
 Your task is to select the ID of the candidate that unambiguously matches the target term in the sentence, ensuring factual accuracy and semantic coherence.
+The input may include a Context: the paragraph the sentence comes from. Use it to resolve pronouns, abbreviations and ambiguous names in the sentence.
 
 Rules:
 
-1. Strict Matching: Only return a candidate ID if the context in the sentence explicitly aligns with the candidate's description.
+1. Strict Matching: Only return a candidate ID if the sentence (and its context, when given) explicitly aligns with the candidate's description.
 
 2. Always Answer: You MUST always select at least one candidate. Never return an empty answer. If the context is limited, choose the candidate whose label and description are the closest semantic match to the term.
 
@@ -59,6 +60,22 @@ Input:
         Description: researcher
 
 Output: C101, C102, C103
+
+Input:
+    Sentence: "It was first released in 1991."
+    Context: "Python was created by Guido van Rossum. It was first released in 1991."
+    Term: "It"
+
+    Candidates:
+        ID: E101
+        Term: Python
+        Description: general-purpose programming language
+
+        ID: E102
+        Term: Python
+        Description: genus of reptiles
+
+Output: E101
 
 Input:
     Sentence: "Marie Curie was born in Warsaw"

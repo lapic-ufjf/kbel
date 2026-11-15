@@ -7,7 +7,7 @@ PYTHON ?= $(if $(wildcard venv/bin/python),venv/bin/python,$(if $(wildcard .venv
 # Files/directories checked for the license header.
 LICENSE_PATHS ?= src tests scripts
 
-.PHONY: help license-check license-add test
+.PHONY: help license-check license-add test evaluate
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -21,3 +21,6 @@ license-add:  ## Add the license header to the files missing it
 
 test:  ## Run the test suite
 	$(PYTHON) -m pytest tests
+
+evaluate:  ## Evaluate on T-REx: make evaluate ARGS="--limit 20 --extractor mrebel"
+	$(PYTHON) scripts/evaluate_trex.py run $(ARGS)

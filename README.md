@@ -42,6 +42,8 @@ Optional features are installed as extras:
 | `llm` | `llm` disambiguator and extractor (OpenAI, Ollama, watsonx) | `pip install "kbel[llm]"` |
 | `mrebel` | `mrebel` extractor (PyTorch + Transformers) | `pip install "kbel[mrebel]"` |
 | `openie` | `openie` extractor — needs only **Java**; CoreNLP is downloaded on first use | `pip install "kbel[openie]"` |
+| `kggen` | `kggen` and `kggen-cluster` extractors ([KGGen](https://github.com/stair-lab/kg-gen), any LiteLLM model) | `pip install "kbel[kggen]"` |
+| `relik` | `relik` and `relik-cie` extractors — need a **Python 3.10/3.11** interpreter; ReLiK is installed in its own environment (`~/.kbel/relik-venv`) on first use | `pip install "kbel[relik]"` |
 | `dev` | tests and tooling | `pip install -e ".[dev]"` |
 
 Missing optional dependencies raise an `ImportError` telling you which extra
@@ -84,8 +86,10 @@ for triple, (subjects, predicates, objects) in kbel.extract_and_link(
 
 To build knowledge-base statements from a whole document, use `construct`.
 It splits the text into paragraphs and sentences, extracts triples from each
-sentence, links subject (item), predicate (property) and object (item) — with
-the sentence as the mention's `text` and its paragraph as `context` — and
+sentence (in batches, for extractors that support them, such as mREBEL),
+links subject (item), predicate (property) and object (item) — with the
+sentence as the mention's `text` and its paragraph as `context`, which the
+`llm` disambiguator includes in its prompt — and
 yields a [KIF](https://github.com/PUC-Behring-AI/kif) `Statement` for each
 triple whose three parts were linked:
 
@@ -140,7 +144,7 @@ in the constructor or later:
 kbel = KBEL('wikidata-vdb', disambiguator='sim', extractor='openie', search_limit=20)
 
 kbel.knowledge_base = 'wikidata'                    # switch search backend
-kbel.disambiguator = Disambiguator('sim', model_name='all-mpnet-base-v2')
+kbel.disambiguator = Disambiguator('sim', model_name='Snowflake/snowflake-arctic-embed-xs', context_weight=1.0)
 kbel.extractor = TripleExtractor('mrebel', num_beams=6)
 ```
 
@@ -163,7 +167,7 @@ works; the most useful are:
 | Name | Strategy | Extra |
 |------|----------|-------|
 | `naive` | Returns the candidate whose label matches the term, else the first one. | — |
-| `sim` | Ranks candidates by embedding similarity between *term + text* and *label + description*. | `similarity` |
+| `sim` | Scores each candidate (`label: description`) against the sentence **and its paragraph** with sentence embeddings, plus a prior on its search rank and an exact-label bonus. Default model `BAAI/bge-small-en-v1.5`; lighter: `Snowflake/snowflake-arctic-embed-xs`, `sentence-transformers/static-retrieval-mrl-en-v1`. | `similarity` |
 | `llm` | Asks an LLM to choose among the candidates, using `text` and `context`. | `llm` |
 
 ```python
@@ -183,6 +187,10 @@ kbel.disambiguator = Disambiguator(
 |------|----------|------------|-------|
 | `openie` | Stanford OpenIE (rule based, CoreNLP) | phrases from the text (`was born in`) | English only; needs Java. CoreNLP is located, downloaded (~500 MB) and started automatically. Pronouns are resolved (*He* → *Alan Turing*). |
 | `mrebel` | [mREBEL](https://github.com/Babelscape/rebel) seq2seq model | Wikidata property labels (`place of birth`) | 18 languages (`source_language='pt_XX'`, …). Model weights are CC BY-NC-SA 4.0 (non-commercial). |
+| `relik` | [ReLiK](https://github.com/SapienzaNLP/relik) relation extraction (retriever + reader) | Wikidata property labels (`place of birth`) | Subject/object as written in the text. Default `relik-ie/relik-relation-extraction-large` (`-small` is lighter). |
+| `relik-cie` | ReLiK closed IE: entity linking + relation extraction | Wikidata property labels | Subject/object are the **linked Wikipedia titles** (*NBA* → *National Basketball Association*). Its entity index is large (~8 GB, loaded in memory). |
+| `kggen` | [KGGen](https://github.com/stair-lab/kg-gen): an LLM extracts the entities, then relations among them (DSPy) | free text | Any LiteLLM model; default `openrouter/openai/gpt-4o-mini`. Sentences of a batch are sent concurrently. |
+| `kggen-cluster` | KGGen + clustering of equivalent entities across the batch | free text | *Turing* and *Alan Turing* become one name. Predicates are only clustered with `cluster_edges=True` (small models over-merge them). |
 | `llm` | Prompted LLM | free text | Custom prompt via `extract(text, prompt=...)`. |
 
 Useful options:
@@ -192,7 +200,17 @@ TripleExtractor('mrebel', source_language='pt_XX', num_beams=6, split_sentences=
 TripleExtractor('openie', corenlp_home='~/Downloads/stanford-corenlp-4.6.0.zip')
 TripleExtractor('openie', resolve_coref=False)      # faster, keeps pronouns
 TripleExtractor('openie', remove_parentheticals=False)
+TripleExtractor('relik', model_name='relik-ie/relik-relation-extraction-small', min_confidence=0.5)
+TripleExtractor('relik-cie', use_entity_titles=True, keep_unlinked=False)
+TripleExtractor('kggen', model='openrouter/openai/gpt-4o-mini')     # OPENROUTER_API_KEY
+TripleExtractor('kggen-cluster', model='ollama_chat/llama3.1', api_base='http://localhost:11434',
+                batch_size=16, context='biographies')
 ```
+
+ReLiK pins torch 2.3, which has no build for recent Pythons, so KBEL runs
+it in a separate process with its own interpreter: `~/.kbel/relik-venv`
+(created on first use from a Python 3.10/3.11 found on the system), or the
+one given by `python=` or the `KBEL_RELIK_PYTHON` variable.
 
 Any extractor can render its triples as a graph (requires
 [GraphViz](https://graphviz.org)):
@@ -236,7 +254,10 @@ class IsA(TripleExtractor, strategy_name='is-a'):
 The async versions (`aextract`, `adisambiguate`) work out of the box: by
 default they run `_extract` / `_disambiguate` in a worker thread, so these
 must be thread-safe (guard shared state, such as a tokenizer, with a lock).
-A plugin with a natively async backend overrides the async hook instead:
+An extractor that is faster on several texts at once (e.g. a batched model)
+overrides `_extract_batch(texts)` and sets `batch_size`; `construct` then
+sends it that many sentences per call. A plugin with a natively async
+backend overrides the async hook instead:
 
 ```python
 class RemoteNER(TripleExtractor, strategy_name='remote'):
@@ -262,6 +283,26 @@ make license-check   # verify the license header of every source file
 make license-add     # add the header where it is missing
 ```
 
+### Evaluating on T-REx
+
+`scripts/evaluate_trex.py` runs `construct` on T-REx documents
+(`evaluation/dataset/re-nlg_0-10000.json`) and compares the statements with
+the gold Wikidata triples. Each document becomes one JSONL line with the
+extracted triples (and how each part was linked), precision/recall/F1, the
+time of every stage and the full trace of extraction, search and
+disambiguation calls. Runs resume where they stopped, and appending results
+of a different configuration is refused.
+
+```bash
+python scripts/evaluate_trex.py run --limit 50 --kb wikidata --extractor mrebel --disambiguator sim
+python scripts/evaluate_trex.py run --limit 50 --extractor kggen --disambiguator llm # OpenRouter (OPENROUTER_API_KEY)
+python scripts/evaluate_trex.py summary evaluation/runs/*.jsonl                      # compare runs
+python scripts/evaluate_trex.py show evaluation/runs/<run>.jsonl Q33199              # inspect a document
+```
+
+Plugin options are passed as `-E key=value` (extractor), `-D key=value`
+(disambiguator) and `-K key=value` (knowledge base); see `run --help`.
+
 ---
 
 ## License
@@ -269,6 +310,7 @@ make license-add     # add the header where it is missing
 KBEL is released under the [Apache-2.0 license](./LICENSE).
 
 Third-party components keep their own licenses: the mREBEL model weights
-are distributed by Babelscape under CC BY-NC-SA 4.0 (non-commercial), and
+are distributed by Babelscape under CC BY-NC-SA 4.0 (non-commercial), ReLiK
+is distributed by SapienzaNLP under CC BY-NC-SA 4.0 (non-commercial), and
 Stanford CoreNLP, run as a separate process by the `openie` extractor, is
 GPL-3.0.

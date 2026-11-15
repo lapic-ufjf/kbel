@@ -1,6 +1,7 @@
 # Copyright 2026 LApIC
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
 import logging
 from textwrap import dedent
 from typing import Any, Literal, Optional, TYPE_CHECKING
@@ -162,55 +163,41 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
         assert mention.text, 'Mention text can not be undefined.'
         assert candidates, f'No candidates to disambiguate the label `{mention.term}`'
 
-        c_prompt = ''
-        for candidate in candidates:
-            c_prompt += f'        ID: {candidate.id}'
-
-            c_label = candidate.label
-            if mention.term:
-                c_label = c_label.strip()
-                c_prompt += f'\n        Term: {c_label}'
-            description = candidate.description
-            if description:
-                description = description.strip()
-                c_prompt += f'\n        Description: {description}'  # noqa E501
-            c_prompt += '\n\n'
-        s_template = EL_DEFAULT_PROMPT + '\n\nExamples:\n' + EL_DEFAULT_EXAMPLES
-        context_template = 'Context: {context}' if mention.context else ''
-        u_template = dedent(f"""Now follow the format strictly.\n
-Input:
-    Sentence: "{{sentence}}"
-    Term: "{{term}}"
-    {context_template}
-
-    Candidates:
-{{candidates}}
-Output:""")
-        from langchain_core.prompts import ChatPromptTemplate
-        promp_template = ChatPromptTemplate.from_messages([
-            ('system', s_template), ('human', u_template)
-        ])
-
-        from langchain_core.runnables import RunnableLambda
-
-        debug = RunnableLambda(lambda entry:
-                                (LOG.debug(entry), entry)[1])
-
-        parser = CommaSeparatedListOutputParserSet()
-        chain = (promp_template
-                    | debug
-                    | self.model
-                    | debug
-                    | parser
-                    | debug)
-
-        return chain, {
-            'context': mention.context,
+        c_prompt = ''.join(
+            f'        ID: {c.id}\n        Term: {c.label.strip()}\n'
+            + (f'        Description: {c.description.strip()}\n' if c.description else '')
+            + '\n'
+            for c in candidates)
+        context = mention.context if mention.context and mention.context != mention.text else None
+        return self._chain(bool(context)), {
+            'context': context,
             'sentence': mention.text,
             'term': mention.term,
             'candidates': c_prompt,
         }
 
+    @functools.cache
+    def _chain(self, with_context: bool) -> Any:
+        """The prompt | model | parser chain, built once per prompt shape."""
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_core.runnables import RunnableLambda
+
+        context_line = '\n    Context: "{context}"' if with_context else ''
+        u_template = dedent(f"""Now follow the format strictly.\n
+Input:
+    Sentence: "{{sentence}}"{context_line}
+    Term: "{{term}}"
+
+    Candidates:
+{{candidates}}
+Output:""")
+        prompt_template = ChatPromptTemplate.from_messages([
+            ('system', EL_DEFAULT_PROMPT + '\n\nExamples:\n' + EL_DEFAULT_EXAMPLES),
+            ('human', u_template),
+        ])
+        debug = RunnableLambda(lambda entry: (LOG.debug(entry), entry)[1])
+        return (prompt_template | debug | self.model | debug
+                | CommaSeparatedListOutputParserSet() | debug)
     @staticmethod
     def _results(
             mention: Mention,

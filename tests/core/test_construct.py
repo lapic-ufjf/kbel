@@ -181,7 +181,7 @@ def test_mentions_use_sentence_as_text_and_paragraph_as_context(setup):
     assert warsaw.context == 'Marie Curie was born in Warsaw. She was a physicist.'
     assert warsaw.entity_type is EntityType.ITEM
     assert birth.entity_type is EntityType.PROPERTY
-    assert paris.context == 'Pierre Curie was born in Paris.'
+    assert paris.context is None
     assert all(m.language == 'en' for m in disambiguator.mentions)
 
 

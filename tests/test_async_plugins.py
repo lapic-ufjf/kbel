@@ -30,6 +30,7 @@ class ScriptedChatModel(BaseChatModel):
     async_only: bool = False
     sync_calls: int = 0
     async_calls: int = 0
+    prompts: list = []
 
     @property
     def _llm_type(self) -> str:
@@ -40,12 +41,14 @@ class ScriptedChatModel(BaseChatModel):
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         self.sync_calls += 1
+        self.prompts.append(messages[-1].content)
         if self.async_only:
             raise AssertionError('sync path used')
         return self._result()
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         self.async_calls += 1
+        self.prompts.append(messages[-1].content)
         await asyncio.sleep(0)
         return self._result()
 
@@ -82,6 +85,45 @@ def test_llm_disambiguator_async_is_native():
 
     assert [r.candidate.id for r in results] == ['Q28865', 'Q271218']
     assert model.sync_calls == 0
+
+
+def test_llm_prompt_includes_the_context():
+    model = ScriptedChatModel(reply='Q28865')
+    Disambiguator('llm', model=model).disambiguate(MENTION, CANDIDATES)
+    [prompt] = model.prompts
+    assert 'Sentence: "Python is a programming language."' in prompt
+    assert 'Context: "A paragraph about software."' in prompt
+
+
+@pytest.mark.parametrize('context', [None, '', MENTION.text])
+def test_llm_prompt_omits_missing_or_redundant_context(context):
+    model = ScriptedChatModel(reply='Q28865')
+    mention = Mention(term=MENTION.term, text=MENTION.text, context=context)
+    Disambiguator('llm', model=model).disambiguate(mention, CANDIDATES)
+    assert 'Context:' not in model.prompts[0]
+
+
+def test_construct_gives_the_llm_the_paragraph(monkeypatch):
+    from kbel.core.kbel import KBEL
+
+    class OneTriple(TripleExtractor, strategy_name='test-llm-context-extract'):
+        def __init__(self, strategy_name):
+            super().__init__()
+
+        def _extract(self, text, prompt=None):
+            return [Triple('Python', 'instance of', 'Python')] if 'It' in text else []
+
+    monkeypatch.setattr(KBEL, 'candidates_lookup', lambda self, m, limit=None: list(CANDIDATES))
+    model = ScriptedChatModel(reply='Q28865', async_only=True)
+    kbel = KBEL('empty', disambiguator=Disambiguator('llm', model=model),
+                extractor=TripleExtractor('test-llm-context-extract'))
+    paragraph = 'Python was created by Guido van Rossum. It was released in 1991.'
+    list(kbel.construct(paragraph + '\n\nA second paragraph.'))
+
+    assert model.prompts
+    for prompt in model.prompts:
+        assert 'Sentence: "It was released in 1991."' in prompt
+        assert f'Context: "{paragraph}"' in prompt
 
 
 def test_llm_disambiguator_concurrent_calls():

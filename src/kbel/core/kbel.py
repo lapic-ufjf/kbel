@@ -8,34 +8,33 @@ import heapq
 import itertools
 import logging
 import queue
+import random
 import threading
-from collections.abc import AsyncIterator, Coroutine
-
-from kif_lib.typing import Any, Iterator, TypeVar
+import time
+from collections.abc import AsyncIterator, Coroutine, Iterable, Iterator
+from typing import Any, TypeVar
 
 from kif_lib import Item, Property, Statement, ValueSnak
 from kif_lib.search import Search
-from kbel.search import WikidataVDB_Search
-from kbel.core.mention import Mention, EntityType
+
 from kbel.core.candidate import Candidate
-from kbel.core.triple import Triple
+from kbel.core.mention import EntityType, Mention
 from kbel.core.results import LinkResult
 from kbel.core.text import split_paragraphs, split_sentences
+from kbel.core.triple import Triple
 from kbel.disambiguators import Disambiguator
 from kbel.extractors import TripleExtractor
+from kbel.search import WikidataVDB_Search
 
 LOG = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
+__all__ = ['KBEL', 'WikidataVDB_Search']
 
 
 def _run_sync(coro: Coroutine[Any, Any, T]) -> T:
-    """Run `coro` to completion from synchronous code.
-
-    Works both in plain scripts and where an event loop is already running
-    (e.g. Jupyter), in which case the coroutine runs in a helper thread.
-    """
+    """Runs `coro` from synchronous code, also where a loop is running (Jupyter)."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -43,18 +42,14 @@ def _run_sync(coro: Coroutine[Any, Any, T]) -> T:
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coro).result()
 
-class _PrioritySlots:
-    """A semaphore whose waiters are served by priority (lowest first).
 
-    `aconstruct` gives every unit of work the index of its sentence, so the
-    work for earlier sentences runs first and statements can be yielded in
-    text order without waiting for the rest of the document.
-    """
+class _PrioritySlots:
+    """A semaphore whose waiters are served by priority (lowest first)."""
 
     def __init__(self, n: int):
         self._free = n
         self._waiters: list[tuple[int, int, asyncio.Future]] = []
-        self._order = itertools.count()     # FIFO among equal priorities
+        self._order = itertools.count()
 
     @contextlib.asynccontextmanager
     async def __call__(self, priority: int):
@@ -67,7 +62,7 @@ class _PrioritySlots:
                 await granted
             except asyncio.CancelledError:
                 if granted.done() and not granted.cancelled():
-                    self._release()          # got the slot, but won't use it
+                    self._release()
                 raise
         try:
             yield
@@ -77,19 +72,18 @@ class _PrioritySlots:
     def _release(self) -> None:
         while self._waiters:
             _, _, granted = heapq.heappop(self._waiters)
-            if not granted.done():           # skip cancelled waiters
+            if not granted.done():
                 granted.set_result(None)
                 return
         self._free += 1
 
 
 def _iterate_sync(agen: AsyncIterator[T]) -> Iterator[T]:
-    """Consume an async iterator from synchronous code, lazily.
+    """Consumes an async iterator lazily from synchronous code.
 
-    The async iterator runs on its own event loop in a helper thread (so this
-    also works where a loop is already running, e.g. Jupyter); items are
-    handed over through a queue as soon as they are produced. Closing the
-    returned iterator early cancels the async one.
+    The iterator runs on its own event loop in a helper thread (so this
+    also works inside Jupyter); closing the returned iterator early cancels
+    the async one.
     """
     items: queue.Queue = queue.Queue()
     done = object()
@@ -102,7 +96,7 @@ def _iterate_sync(agen: AsyncIterator[T]) -> Iterator[T]:
                 items.put((True, item))
         except asyncio.CancelledError:
             pass
-        except BaseException as e:      # forwarded to the consumer
+        except BaseException as e:
             items.put((False, e))
         finally:
             await agen.aclose()
@@ -132,19 +126,83 @@ def _iterate_sync(agen: AsyncIterator[T]) -> Iterator[T]:
             yield item
     finally:
         if worker.is_alive():
-            try:
+            with contextlib.suppress(RuntimeError):
                 state['loop'].call_soon_threadsafe(state['task'].cancel)
-            except RuntimeError:        # loop already closed: nothing to stop
-                pass
         worker.join()
 
 
+TRANSIENT_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+
+def _retry_after(error: BaseException) -> float | None:
+    """Seconds to wait before retrying `error`, or None if it is not transient.
+
+    Rate limits (429), server errors and network failures are transient;
+    the server's `Retry-After` header is honoured when present.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return None
+    if isinstance(error, httpx.HTTPStatusError):
+        if error.response.status_code not in TRANSIENT_STATUS:
+            return None
+        with contextlib.suppress(TypeError, ValueError):
+            return max(0.0, float(error.response.headers.get('Retry-After')))
+        return 0.0
+    if isinstance(error, httpx.TransportError):
+        return 0.0
+    return None
+
+
+def _skip_errors(items: Iterable[T]) -> Iterator[T]:
+    """Iterates `items`, skipping the ones whose retrieval raises.
+
+    Transient errors (see `_retry_after`) are raised instead, so that the
+    whole search can be retried rather than silently losing results.
+    """
+    it = iter(items)
+    while True:
+        try:
+            yield next(it)
+        except StopIteration:
+            return
+        except Exception as e:
+            if _retry_after(e) is not None:
+                raise
+            LOG.info(f'Error fetching item: {e}')
+
+
 class KBEL:
+    """Links text to knowledge-base entities.
+
+    Searches always run in worker threads: KIF's async HTTP client is bound
+    to the event loop that first used it. Extraction and disambiguation use
+    the plugins' async hooks.
+    """
 
     _knowledge_base: Search
     _extractor: TripleExtractor | None = None
     _disambiguator: Disambiguator | None = None
     _search_limit = 10
+    search_retries = 6
+    search_backoff = 1.0
+
+    def __init__(
+        self,
+        knowledge_base: Search | str,
+        disambiguator: Disambiguator | str | None = None,
+        extractor: TripleExtractor | str | None = None,
+        search_limit: int = 10,
+        **kwargs: Any,
+    ):
+        assert knowledge_base, 'Knowledge base can not be undefined.'
+        self.search_limit = search_limit
+        self.knowledge_base = knowledge_base
+        if disambiguator is not None:
+            self.disambiguator = disambiguator
+        if extractor is not None:
+            self.extractor = extractor
 
     @property
     def search_limit(self) -> int:
@@ -153,22 +211,17 @@ class KBEL:
     @search_limit.setter
     def search_limit(self, value: int):
         if value <= 0:
-            raise ValueError(
-                'The limit to lookup candidates must be bigger than zero'
-            )
+            raise ValueError('The limit to lookup candidates must be bigger than zero')
         self._search_limit = value
 
     @property
     def knowledge_base(self) -> Search:
         return self._knowledge_base
-    
 
     @knowledge_base.setter
     def knowledge_base(self, value: Search | str) -> None:
-        if isinstance(value, str):
-            value = Search(value, limit=self._search_limit)
-
-        self._knowledge_base = value
+        self._knowledge_base = (
+            Search(value, limit=self._search_limit) if isinstance(value, str) else value)
 
     @property
     def disambiguator(self) -> Disambiguator | None:
@@ -176,9 +229,7 @@ class KBEL:
 
     @disambiguator.setter
     def disambiguator(self, value: Disambiguator | str) -> None:
-        if isinstance(value, str):
-            value = Disambiguator(value)
-        self._disambiguator = value
+        self._disambiguator = Disambiguator(value) if isinstance(value, str) else value
 
     @property
     def extractor(self) -> TripleExtractor | None:
@@ -186,29 +237,16 @@ class KBEL:
 
     @extractor.setter
     def extractor(self, value: TripleExtractor | str | None) -> None:
-        if isinstance(value, str):
-            value = TripleExtractor(value)
-        self._extractor = value
+        self._extractor = TripleExtractor(value) if isinstance(value, str) else value
 
+    def _require(self, extractor: bool = False, disambiguator: bool = False) -> None:
+        if extractor and self._extractor is None:
+            raise RuntimeError("No extractor has been configured.")
+        if disambiguator and self._disambiguator is None:
+            raise RuntimeError("No disambiguator has been configured.")
 
-    def __init__(self, 
-                 knowledge_base: Search | str, disambiguator: Disambiguator | str | None = None, extractor: TripleExtractor | str | None = None, search_limit=10, **kwargs):
-        assert knowledge_base, 'Knowledge base can not be undefined.'
-        self._search_limit = search_limit
-        self.knowledge_base = knowledge_base
-        if disambiguator is not None:
-            self.disambiguator = disambiguator
-        if extractor is not None:
-            self.extractor = extractor
-
-
-    # -- async API -----------------------------------------------------------
-    #
-    # Extraction and disambiguation go through the plugins' async hooks
-    # (`aextract`, `adisambiguate`): natively async plugins (e.g. LLMs) run
-    # on the event loop, the others in worker threads. Searches always run
-    # in worker threads: KIF's async HTTP client is bound to the event loop
-    # that first used it, so it breaks across `asyncio.run` calls.
+    def _limit(self, limit: int | None) -> int:
+        return limit if limit is not None and limit > 0 else self._search_limit
 
     async def acandidates_lookup(
             self, mention: Mention, limit: int | None = None) -> list[Candidate]:
@@ -217,9 +255,21 @@ class KBEL:
 
     async def aextract(self, text: str, *args: Any, **kwargs: Any) -> list[Triple]:
         """Async version of `extract`."""
-        if self._extractor is None:
-            raise RuntimeError("No extractor has been configured.")
+        self._require(extractor=True)
         return await self._extractor.aextract(text, *args, **kwargs)
+
+    async def alink(
+        self,
+        mention: Mention,
+        search_limit: int | None = None,
+        limit: int = 10,
+        *args: Any,
+        **kwargs: Any,
+    ) -> list[LinkResult]:
+        """Async version of `link`."""
+        self._require(disambiguator=True)
+        candidates = await self.acandidates_lookup(mention, search_limit)
+        return await self._adisambiguate(mention, candidates, limit, *args, **kwargs)
 
     async def aextract_and_link(
         self,
@@ -236,15 +286,12 @@ class KBEL:
         The mentions of all triples are linked concurrently (at most
         `max_concurrency` at a time); identical mentions are linked once.
         """
-        if self._disambiguator is None:
-            raise RuntimeError("No disambiguator has been configured.")
+        self._require(disambiguator=True)
         if max_concurrency < 1:
             raise ValueError('max_concurrency must be a positive integer.')
-
         triples = await self.aextract(text, **kwargs)
         mentions = TripleExtractor.build_mentions(
             triples, text, context=context, language=language)
-
         slots = asyncio.Semaphore(max_concurrency)
         links: dict[tuple, asyncio.Future] = {}
 
@@ -259,23 +306,8 @@ class KBEL:
             return links[key]
 
         linked = await asyncio.gather(*(
-            asyncio.gather(*(link(m) for m in triple_mentions))
-            for triple_mentions in mentions))
+            asyncio.gather(*(link(m) for m in ms)) for ms in mentions))
         return [(triple, tuple(parts)) for triple, parts in zip(triples, linked)]
-
-    async def alink(
-        self,
-        mention: Mention,
-        search_limit: int | None = None,
-        limit: int = 10,
-        *args: Any,
-        **kwargs: Any,
-    ) -> list[LinkResult]:
-        """Async version of `link`."""
-        if self.disambiguator is None:
-            raise RuntimeError("No disambiguator has been configured.")
-        candidates = await self.acandidates_lookup(mention, search_limit)
-        return await self._adisambiguate(mention, candidates, limit, *args, **kwargs)
 
     async def _adisambiguate(
         self,
@@ -304,18 +336,20 @@ class KBEL:
         Pipeline:
             1. the text is split into paragraphs, and each paragraph into
                sentences;
-            2. triples are extracted from every sentence;
+            2. triples are extracted from every sentence; sentences go to the
+               extractor in groups of its `batch_size`;
             3. each triple becomes three mentions — subject and object as
                items, predicate as a property — whose `text` is the sentence
-               and whose `context` is the paragraph;
+               and whose `context` is the paragraph (omitted when the
+               paragraph is the sentence itself);
             4. every mention is linked (search + disambiguation). Searches
                are shared between mentions with the same term, and identical
                mentions are linked only once;
             5. each fully linked triple becomes
                `Statement(subject, ValueSnak(property, value))`.
 
-        All the work is scheduled at once and runs concurrently (at most
-        `max_concurrency` calls at a time). Statements are yielded in text
+        All the work runs concurrently (at most `max_concurrency` calls at a
+        time), earlier sentences first. Statements are yielded in text
         order, each as soon as its triple is linked; stopping the iteration
         early cancels the pending work.
 
@@ -335,15 +369,23 @@ class KBEL:
             RuntimeError: If no extractor or no disambiguator is configured
                 (raised by the call itself, before iterating).
         """
-        if self._extractor is None:
-            raise RuntimeError("No extractor has been configured.")
-        if self._disambiguator is None:
-            raise RuntimeError("No disambiguator has been configured.")
+        self._require(extractor=True, disambiguator=True)
         if max_concurrency < 1:
             raise ValueError('max_concurrency must be a positive integer.')
-        if search_limit is None or search_limit <= 0:
-            search_limit = self._search_limit
-        return self._aconstruct(text, language, search_limit, max_concurrency)
+        return self._aconstruct(text, language, self._limit(search_limit), max_concurrency)
+
+    @staticmethod
+    def sentences_with_context(text: str) -> list[tuple[str, str | None]]:
+        """(sentence, paragraph) pairs of `text`, as used by `construct`.
+
+        The paragraph is None when it has a single sentence.
+        """
+        units = []
+        for paragraph in split_paragraphs(text):
+            sentences = split_sentences(paragraph)
+            context = paragraph if len(sentences) > 1 else None
+            units.extend((s, context) for s in sentences)
+        return units
 
     async def _aconstruct(
         self,
@@ -356,20 +398,16 @@ class KBEL:
         searches: dict[tuple, asyncio.Future] = {}
         links: dict[tuple, asyncio.Future] = {}
 
-        # `rank` is the index of the sentence the work is for: lower first.
-        async def candidates_of(m: Mention, rank: int) -> list[Candidate]:
-            key = (m.term, m.entity_type, m.language)
-            if key not in searches:
-                async def search() -> list[Candidate]:
-                    async with slots(rank):
-                        return await asyncio.to_thread(
-                            self.candidates_lookup, m, search_limit)
-                searches[key] = asyncio.ensure_future(search())
-            return await searches[key]
+        async def search(m: Mention, rank: int) -> list[Candidate]:
+            async with slots(rank):
+                return await asyncio.to_thread(self.candidates_lookup, m, search_limit)
 
         async def link_one(m: Mention, rank: int) -> LinkResult | None:
             try:
-                candidates = await candidates_of(m, rank)
+                key = (m.term, m.entity_type, m.language)
+                if key not in searches:
+                    searches[key] = asyncio.ensure_future(search(m, rank))
+                candidates = await searches[key]
                 if not candidates:
                     return None
                 async with slots(rank):
@@ -385,24 +423,25 @@ class KBEL:
                 links[key] = asyncio.ensure_future(link_one(m, rank))
             return links[key]
 
-        async def process(rank: int, sentence: str, paragraph: str) -> list[
+        async def process(first: int, batch: list[tuple[str, str | None]]) -> list[
                 tuple[Triple, asyncio.Future]]:
-            """Extracts a sentence's triples and schedules their links."""
-            async with slots(rank):
-                triples = await self._extractor.aextract(sentence)
-            mentions = TripleExtractor.build_mentions(
-                triples, sentence, context=paragraph, language=language)
-            return [(t, asyncio.gather(*(link(m, rank) for m in ms)))
-                    for t, ms in zip(triples, mentions)]
+            async with slots(first):
+                extracted = await self._extractor.aextract_batch([s for s, _ in batch])
+            scheduled = []
+            for rank, (sentence, context), triples in zip(
+                    itertools.count(first), batch, extracted):
+                mentions = TripleExtractor.build_mentions(
+                    triples, sentence, context=context, language=language)
+                scheduled.extend(
+                    (t, asyncio.gather(*(link(m, rank) for m in ms)))
+                    for t, ms in zip(triples, mentions))
+            return scheduled
 
-        # 1-4. Schedule everything; each sentence links as soon as extracted.
-        units = [(sentence, paragraph)
-                 for paragraph in split_paragraphs(text)
-                 for sentence in split_sentences(paragraph)]
-        tasks = [asyncio.ensure_future(process(rank, *u))
-                 for rank, u in enumerate(units)]
+        units = self.sentences_with_context(text)
+        size = max(1, self._extractor.batch_size)
+        tasks = [asyncio.ensure_future(process(i, units[i:i + size]))
+                 for i in range(0, len(units), size)]
 
-        # 5. Yield statements in text order, as they become ready.
         seen: set[Statement] = set()
         try:
             for task in tasks:
@@ -429,113 +468,81 @@ class KBEL:
             Item(subject.candidate.iri),
             ValueSnak(Property(predicate.candidate.iri), Item(obj.candidate.iri)))
 
-    def candidates_lookup(self, mention: Mention, limit: int = None) -> list[Candidate]:
-        """Fetches candidate entities from the knowledge base for a given mention.
-        
+    def candidates_lookup(self, mention: Mention, limit: int | None = None) -> list[Candidate]:
+        """Fetches candidate entities from the knowledge base for a mention.
+
+        Transient failures of the knowledge base (rate limits, server and
+        network errors) are retried up to `search_retries` times with
+        exponential backoff; if they persist, the error is raised.
+
         Args:
             mention (Mention): The mention to look up candidates for.
             limit (int, optional): Maximum number of candidates to retrieve.
                 Defaults to the instance's search limit.
         """
+        for attempt in range(self.search_retries + 1):
+            try:
+                return self._candidates(mention, self._limit(limit))
+            except Exception as e:
+                wait = _retry_after(e)
+                if wait is None or attempt == self.search_retries:
+                    raise
+                delay = max(wait, self.search_backoff * 2 ** attempt) * random.uniform(1, 1.5)
+                LOG.info(f'Search for `{mention.term}` failed ({e}); retrying in {delay:.1f}s')
+                time.sleep(min(delay, 60.0))
+        raise AssertionError('unreachable')
 
-        if limit is None or limit <= 0:
-            limit = self._search_limit
-
-        @staticmethod
-        def _safe_next(it: Iterator) -> Iterator:
-                """Safely iterate over an iterator, skipping errors."""
-                while True:
-                    try:
-                        yield next(it)
-                    except StopIteration:
-                        break
-                    except Exception as e:
-                        LOG.info(f'Error fetching item: {e}')
-                        continue
-
-        @staticmethod
-        def _extract_text(data: dict[str, Any], key: str) -> str:
-            """Extract the text for a given key and language."""
-            l = mention.language if mention.language else 'en'
-            value = data.get(key, {}).get(l)
-            return value.content if value else ''
-        
-       
+    def _candidates(self, mention: Mention, limit: int) -> list[Candidate]:
+        kb = self._knowledge_base
         if mention.entity_type is EntityType.ITEM:
-            found_candidates =  self._knowledge_base.item_descriptor(search=mention.term, limit=limit)
+            found = kb.item_descriptor(search=mention.term, limit=limit)
         elif mention.entity_type is EntityType.PROPERTY:
-            found_candidates =  self._knowledge_base.property_descriptor(search=mention.term, limit=limit)
+            found = kb.property_descriptor(search=mention.term, limit=limit)
         else:
-            from itertools import chain
-            found_candidates = chain(
-                self._knowledge_base.item_descriptor(search=mention.term, limit=limit),
-                self._knowledge_base.property_descriptor(search=mention.term, limit=limit),
-            )
+            found = itertools.chain(
+                kb.item_descriptor(search=mention.term, limit=limit),
+                kb.property_descriptor(search=mention.term, limit=limit))
 
-        candidates = []
-        for entity, desc in _safe_next(iter(found_candidates)):
-            candidate = Candidate(
-                id = entity.iri.content,
-                label = _extract_text(desc, 'labels'),
-                description = _extract_text(desc, 'descriptions'),
-                iri = entity.iri.content
-            )
-            candidates.append(candidate)
+        language = mention.language or 'en'
 
-        return candidates
+        def text_of(data: dict[str, Any], key: str) -> str:
+            value = data.get(key, {}).get(language)
+            return value.content if value else ''
+
+        return [Candidate(id=entity.iri.content, iri=entity.iri.content,
+                          label=text_of(desc, 'labels'),
+                          description=text_of(desc, 'descriptions'))
+                for entity, desc in _skip_errors(found)]
 
     def link(
         self,
         mention: Mention,
-        search_limit: int = None,
+        search_limit: int | None = None,
         limit: int = 10,
         *args: Any,
         **kwargs: Any,
     ) -> list[LinkResult]:
-
         """Links a mention to the most relevant entities in the knowledge base.
 
         Args:
             mention (Mention): The mention to link.
-            search_limit (int, optional): Maximum number of candidates to retrieve from the knowledge base.
-                Defaults to the instance's search limit.
-            limit (int, optional): Maximum number of top candidates to return after disambiguation.
-                Defaults to 10.
+            search_limit (int, optional): Maximum number of candidates to
+                retrieve. Defaults to the instance's search limit.
+            limit (int, optional): Maximum number of results after
+                disambiguation. Defaults to 10.
         """
-        if self.disambiguator is None:
-            raise RuntimeError("No disambiguator has been configured.")
-
-        if search_limit is None or search_limit <= 0:
-            search_limit = self._search_limit
-
-        candidates = self.candidates_lookup(mention, limit=search_limit)
+        self._require(disambiguator=True)
+        candidates = self.candidates_lookup(mention, search_limit)
         if not candidates:
             LOG.info(f'No candidates found for `{mention.term}`.')
             return []
+        return [LinkResult.from_disambiguation(mention, result)
+                for result in self._disambiguator.disambiguate(
+                    mention, candidates, limit, *args, **kwargs)]
 
-        return [
-            LinkResult.from_disambiguation(mention, result)
-            for result in self._disambiguator.disambiguate(
-                mention,
-                candidates,
-                limit,
-                *args,
-                **kwargs)
-        ]
-    
-    def extract(
-            self, 
-            text: str, 
-            *args: Any, 
-            **kwargs: Any
-            ) -> list[Triple]:
-        """Extracts subject-predicate-object triples from a text.
-
-        Args:
-            text (str): Input text.
-        """
-        if self._extractor is None:
-            raise RuntimeError("No extractor has been configured.")
+    def extract(self, text: str, *args: Any, **kwargs: Any) -> list[Triple]:
+        """Extracts subject-predicate-object triples from a text."""
+        self._require(extractor=True)
         return self._extractor.extract(text, *args, **kwargs)
 
     def extract_and_link(
@@ -543,14 +550,14 @@ class KBEL:
         text: str,
         context: str | None = None,
         language: str | None = None,
-        search_limit: int = None,
+        search_limit: int | None = None,
         limit: int = 10,
         **kwargs: Any,
     ) -> list[tuple[Triple, tuple[list[LinkResult], list[LinkResult], list[LinkResult]]]]:
         """Extracts triples from a text and links subject, predicate and object.
 
-        Blocking wrapper of `aextract_and_link`: the mentions are linked
-        concurrently (also usable inside Jupyter).
+        Blocking wrapper of `aextract_and_link` (mentions are linked
+        concurrently; also usable inside Jupyter).
 
         Returns:
             One entry per triple: (triple, (subject_links, predicate_links, object_links)).
@@ -558,7 +565,6 @@ class KBEL:
         return _run_sync(self.aextract_and_link(
             text, context=context, language=language,
             search_limit=search_limit, limit=limit, **kwargs))
-
 
     def construct(
         self,
@@ -570,9 +576,8 @@ class KBEL:
         """Builds KIF statements from a text (iterator).
 
         Blocking counterpart of `aconstruct`: statements are produced lazily,
-        in text order, while the remaining work proceeds concurrently in the
-        background. Also usable inside Jupyter. Wrap it in `list(...)` to
-        get all statements at once.
+        in text order, while the remaining work proceeds in the background.
+        Also usable inside Jupyter. Wrap it in `list(...)` to get them all.
         """
         return _iterate_sync(self.aconstruct(
             text, language=language, search_limit=search_limit,

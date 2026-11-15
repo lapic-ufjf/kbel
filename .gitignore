@@ -28,3 +28,7 @@ __pycache__/
 # Stanford CoreNLP downloads (~500 MB; keep them in ~/.stanfordnlp_resources)
 stanford-corenlp-*.zip
 stanford-corenlp-*/
+
+# T-REx evaluation: the dataset (~140 MB) and the run outputs
+/evaluation/dataset/re-nlg_*.json
+/evaluation/runs/

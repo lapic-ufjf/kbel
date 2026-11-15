@@ -89,7 +89,7 @@ class MREBELTripleExtractor(
                 mREBEL tends to emit only the most salient relations of
                 a long input, so splitting usually yields more triples.
             batch_size: Number of sentences processed per forward pass
-                when `split_sentences` is enabled.
+                (also used by `KBEL.construct` to group sentences).
             graph: Render a graph image on every extract call.
             graph_path: Output path of the graph image.
         """
@@ -132,8 +132,7 @@ class MREBELTripleExtractor(
         self._num_beams = num_beams
         self._num_return_sequences = num_return_sequences
         self._split_sentences = split_sentences
-        self._batch_size = batch_size
-        # Hugging Face fast tokenizers are not thread-safe.
+        self.batch_size = batch_size
         self._lock = threading.Lock()
 
         if device is None:
@@ -260,7 +259,6 @@ class MREBELTripleExtractor(
                     object_type = token[1:-1]
                     state = "relation"
                 elif state == "relation":
-                    # Another object of the same subject.
                     save()
                     object_ = relation = ""
                     object_type = ""
@@ -277,13 +275,8 @@ class MREBELTripleExtractor(
         save()
         return triplets
     
-    @staticmethod
-    def _split_into_sentences(text: str) -> list[str]:
-        """Split a text into sentences (see `kbel.core.text.split_sentences`)."""
-        return split_sentences(text)
-
-    def _generate(self, texts: list[str]) -> list[str]:
-        """Run mREBEL on a batch of texts; returns all decoded beams."""
+    def _generate(self, texts: list[str]) -> list[list[str]]:
+        """Runs mREBEL on a batch; returns the decoded beams of each text."""
         with self._lock:
             inputs = self._tokenizer(
                 texts,
@@ -292,8 +285,6 @@ class MREBELTripleExtractor(
                 padding=True,
                 return_tensors="pt",
             ).to(self._device)
-
-            # Same generation settings as the reference code.
             with self._torch.inference_mode():
                 generated = self._model.generate(
                     inputs["input_ids"],
@@ -305,37 +296,33 @@ class MREBELTripleExtractor(
                     forced_bos_token_id=None,
                     decoder_start_token_id=self._decoder_start_token_id,
                 )
+            decoded = self._tokenizer.batch_decode(generated, skip_special_tokens=False)
+        n = self._num_return_sequences
+        return [decoded[i * n:(i + 1) * n] for i in range(len(texts))]
 
-            return self._tokenizer.batch_decode(
-                generated, skip_special_tokens=False
-            )
-
-    def _extract(self, text: str, prompt: Any = None) -> list[Triple]:
-        if prompt is not None:
-            LOG.debug("`prompt` has no effect in the mREBEL extractor.")
-
-        chunks = (
-            self._split_into_sentences(text)
-            if self._split_sentences
-            else [text]
-        ) or [text]
-
-        decoded: list[str] = []
-        for i in range(0, len(chunks), self._batch_size):
-            decoded.extend(self._generate(chunks[i:i + self._batch_size]))
-
+    def _triples(self, sequences: list[str]) -> list[Triple]:
         triples: dict[tuple[str, str, str], Triple] = {}
-        for seq in decoded:
+        for seq in sequences:
             for item in self._parse_triplets(seq):
                 key = (item["subject"], item["predicate"], item["object"])
-                triples.setdefault(
-                    key,
-                    Triple(
-                        subject=item["subject"],
-                        predicate=item["predicate"],
-                        object=item["object"],
-                    ),
-                )
-
-        LOG.info("Extracted %d unique triples from input text.", len(triples))
+                triples.setdefault(key, Triple(*key))
         return list(triples.values())
+
+    def _sequences(self, texts: list[str]) -> list[list[str]]:
+        """The beams of each text, generated in batches of similar length."""
+        order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+        sequences: list[list[str]] = [[] for _ in texts]
+        for start in range(0, len(order), self.batch_size):
+            chunk = order[start:start + self.batch_size]
+            for i, beams in zip(chunk, self._generate([texts[i] for i in chunk])):
+                sequences[i] = beams
+        return sequences
+
+    def _extract_batch(self, texts: list[str], prompt: Any = None) -> list[list[Triple]]:
+        return [self._triples(beams) for beams in self._sequences(texts)]
+
+    def _extract(self, text: str, prompt: Any = None) -> list[Triple]:
+        chunks = (split_sentences(text) if self._split_sentences else None) or [text]
+        triples = self._triples([seq for beams in self._sequences(chunks) for seq in beams])
+        LOG.info("Extracted %d unique triples from input text.", len(triples))
+        return triples

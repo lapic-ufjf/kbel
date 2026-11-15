@@ -5,11 +5,8 @@
 
 import re
 
-# One or more blank lines separate paragraphs.
 _PARAGRAPH_BOUNDARY = re.compile(r'\n\s*\n')
 
-# [.!?…] (optionally followed by a closing quote/bracket) and whitespace,
-# unless the next word starts in lowercase ("e.g. foo", "approx. three").
 _SENTENCE_BOUNDARY = re.compile(
     r'(?:(?<=[.!?…])|(?<=[.!?…]["\'”’)\]]))\s+(?![a-z])')
 
