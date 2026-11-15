@@ -121,6 +121,93 @@ def test_citation_regex(text, expected):
     assert CITATION_RE.sub('', text) == expected
 
 
+# -- parentheticals ---------------------------------------------------------
+
+@pytest.mark.parametrize('remove, expected', [
+    (True, 'Alan Turing was an English mathematician.'),
+    (False, 'Alan Turing (/ˈtjʊərɪŋ/; 23 June 1912 – 7 June 1954) was an English '
+            'mathematician (and logician (sic)).'),
+])
+def test_parenthetical_removal(remove, expected):
+    server = FakeServer()
+    TripleExtractor('openie', server=server, remove_parentheticals=remove).extract(
+        'Alan Turing (/ˈtjʊərɪŋ/; 23 June 1912 – 7 June 1954) was an English '
+        'mathematician (and logician (sic)).')
+    assert server.requests[0][0] == expected
+
+
+# -- coreference ---------------------------------------------------------------
+
+def mention(text, kind, sent, start, end, representative=False):
+    """A CoreNLP coref mention (1-based sentence and token indices)."""
+    return {'text': text, 'type': kind, 'sentNum': sent, 'startIndex': start,
+            'endIndex': end, 'isRepresentativeMention': representative}
+
+
+# "Alan Turing was a mathematician. He formalised algorithms and his work
+#  helped the Allies. Bletchley Park hired him."
+COREF_RESPONSE = {
+    'sentences': [
+        {'openie': [{'subject': 'Alan Turing', 'subjectSpan': [0, 2], 'relation': 'was',
+                     'object': 'mathematician', 'objectSpan': [3, 4]}]},
+        {'openie': [{'subject': 'He', 'subjectSpan': [0, 1], 'relation': 'formalised',
+                     'object': 'algorithms', 'objectSpan': [2, 3]},
+                    {'subject': 'his work', 'subjectSpan': [4, 6], 'relation': 'helped',
+                     'object': 'Allies', 'objectSpan': [7, 8]}]},
+        {'openie': [{'subject': 'Bletchley Park', 'subjectSpan': [0, 2], 'relation': 'hired',
+                     'object': 'him', 'objectSpan': [2, 3]},
+                    {'subject': 'It', 'subjectSpan': [0, 1], 'relation': 'is',
+                     'object': 'unresolved', 'objectSpan': [2, 3]}]},
+    ],
+    'corefs': {
+        '1': [mention('Alan Turing', 'PROPER', 1, 1, 3, representative=True),
+              mention('He', 'PRONOMINAL', 2, 1, 2),
+              mention('his', 'PRONOMINAL', 2, 5, 6),
+              mention('him', 'PRONOMINAL', 3, 3, 4)],
+        '2': [mention('It', 'PRONOMINAL', 3, 1, 2, representative=True),   # no antecedent
+              mention('it', 'PRONOMINAL', 3, 9, 10)],
+    },
+}
+
+
+def test_coref_replaces_pronouns_and_possessives():
+    extractor = TripleExtractor('openie', server=FakeServer(COREF_RESPONSE))
+    assert as_tuples(extractor.extract('...')) == [
+        ('Alan Turing', 'was', 'mathematician'),
+        ('Alan Turing', 'formalised', 'algorithms'),
+        ("Alan Turing's work", 'helped', 'Allies'),
+        ('Bletchley Park', 'hired', 'Alan Turing'),      # object pronoun
+        ('It', 'is', 'unresolved'),                       # chain without a name
+    ]
+
+
+def test_coref_can_be_disabled():
+    server = FakeServer(COREF_RESPONSE)
+    extractor = TripleExtractor('openie', server=server, resolve_coref=False)
+    subjects = [t.subject for t in extractor.extract('...')]
+
+    assert 'He' in subjects and 'his work' in subjects
+    annotators = server.requests[0][1]['annotators'].split(',')
+    assert 'coref' not in annotators and 'ner' not in annotators
+
+
+def test_coref_annotators_are_requested():
+    server = FakeServer()
+    TripleExtractor('openie', server=server).extract('Some text.')
+    annotators = server.requests[0][1]['annotators'].split(',')
+    assert annotators.index('ner') < annotators.index('coref') < annotators.index('openie')
+    assert 'parse' in annotators
+    assert server.requests[0][1]['coref.algorithm'] == 'statistical'
+
+
+def test_coref_without_spans_keeps_text():
+    response = {'sentences': [{'openie': [
+        {'subject': 'He', 'relation': 'was', 'object': 'there'}]}],
+        'corefs': COREF_RESPONSE['corefs']}
+    extractor = TripleExtractor('openie', server=FakeServer(response))
+    assert as_tuples(extractor.extract('...')) == [('He', 'was', 'there')]
+
+
 # -- response parsing -------------------------------------------------------
 
 def test_parse_dedups_normalizes_and_filters():
@@ -178,6 +265,47 @@ def test_remove_subsumed_can_be_disabled():
     extractor = TripleExtractor(
         'openie', server=FakeServer(VARIANTS), remove_subsumed=False)
     assert len(extractor.extract('...')) == 8
+
+
+def test_predicate_variants_keep_the_shortest_predicate():
+    triples = [
+        Triple('Turing', 'also contributed Turing test to', 'mathematical biology'),
+        Triple('Turing', 'contributed to', 'mathematical biology'),
+        Triple('Turing', 'contributed Turing test to', 'mathematical biology'),
+        Triple('Turing', 'also contributed', 'Turing test'),
+        Triple('Turing', 'contributed', 'Turing test'),
+        Triple('Turing', 'formalised concepts with', 'Turing machine'),
+        Triple('Turing', 'formalised with', 'Turing machine'),
+    ]
+    assert as_tuples(OpenIETripleExtractor._drop_subsumed(triples)) == [
+        ('Turing', 'contributed to', 'mathematical biology'),
+        ('Turing', 'contributed', 'Turing test'),
+        ('Turing', 'formalised with', 'Turing machine'),
+    ]
+
+
+def test_predicate_and_object_variants_combined():
+    triples = [
+        Triple('He', 'contributed Turing test to', 'philosophy'),
+        Triple('He', 'contributed Turing test to', 'philosophy of artificial intelligence'),
+        Triple('He', 'contributed to', 'philosophy'),
+        Triple('He', 'contributed to', 'philosophy of artificial intelligence'),
+    ]
+    assert as_tuples(OpenIETripleExtractor._drop_subsumed(triples)) == [
+        ('He', 'contributed to', 'philosophy of artificial intelligence')]
+
+
+@pytest.mark.parametrize('negated', ['is not', 'was never', "is n't", 'cannot be'])
+def test_negated_variants_are_kept(negated):
+    positive = negated.split()[0] if negated != 'cannot be' else 'be'
+    triples = [Triple('A', positive, 'B'), Triple('A', negated, 'B')]
+    assert OpenIETripleExtractor._drop_subsumed(triples) == triples
+
+
+def test_different_subjects_or_objects_are_not_merged():
+    triples = [Triple('A', 'was born in', 'Hawaii'), Triple('A', 'was', 'born'),
+               Triple('B', 'was born in', 'Hawaii'), Triple('A', 'born in', 'Kenya')]
+    assert OpenIETripleExtractor._drop_subsumed(triples) == triples
 
 
 def test_subsumption_needs_words_in_order():
@@ -360,3 +488,20 @@ def test_real_long_sentence_with_citation(real_extractor):
 
     assert ('Python', 'supports', 'multiple programming paradigms') in triples
     assert all('38' not in part for t in triples for part in t)
+
+
+@pytest.mark.integration
+def test_real_pronouns_and_parentheticals(real_extractor):
+    text = (
+        'Alan Mathison Turing (/ˈtjʊərɪŋ/; 23 June 1912 – 7 June 1954) was an English '
+        'mathematician and logician[6] widely regarded as the father of theoretical '
+        'computer science.[7] He formalised the concepts of algorithm and computation '
+        'with the Turing machine. He also contributed the Turing test to philosophy of '
+        'artificial intelligence.')
+    triples = as_tuples(real_extractor.extract(text))
+    subjects = {s for s, _, _ in triples}
+
+    assert ('Alan Mathison Turing', 'was regarded as',
+            'father of theoretical computer science') in triples
+    assert ('Alan Mathison Turing', 'contributed', 'Turing test') in triples
+    assert 'He' not in subjects

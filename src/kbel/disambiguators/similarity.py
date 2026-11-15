@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import threading
 from typing import Callable, Literal, Tuple
 
 import numpy as np
@@ -84,6 +85,8 @@ class SimilarityDisambiguator(Disambiguator, strategy_name='sim'):
 
         LOG.info(f"Loading embedding model: {model_name}")
         self._model = SentenceTransformer(model_name)
+        # Hugging Face fast tokenizers are not thread-safe.
+        self._lock = threading.Lock()
 
 
         self._similarity_fn = SIMILARITY_METRICS.get(similarity_metric, cosine)
@@ -118,12 +121,14 @@ class SimilarityDisambiguator(Disambiguator, strategy_name='sim'):
 
         LOG.debug(f"Disambiguating with sentence: {sentence}")
         try:
-            sentence_emb = self._model.encode(sentence)
+            with self._lock:
+                sentence_emb = self._model.encode(sentence)
             candidate_texts = [
                 c.label + " " + c.description
                 for c in candidates
             ]
-            candidate_embs = self._model.encode(candidate_texts)
+            with self._lock:
+                candidate_embs = self._model.encode(candidate_texts)
 
             sims = [
                 (self._similarity_fn(to_numpy(sentence_emb), to_numpy(emb)), c)

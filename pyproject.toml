@@ -72,6 +72,11 @@ dev = [
 # Only Java is needed: CoreNLP is driven through its HTTP server.
 openie = []
 
+mrebel = [
+    "torch>=2",
+    "transformers>=4.40",
+]
+
 [project.urls]
 Homepage = "https://github.com/lapic-ufjf/kbel"
 Repository = "https://github.com/lapic-ufjf/kbel"

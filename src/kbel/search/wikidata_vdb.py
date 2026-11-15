@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import asyncio
+
+import httpx
 from kif_lib import IRI, Text
 from typing import (
     Any,
+    AsyncIterator,
     cast,
     ClassVar,
     Iterator,
@@ -53,6 +57,7 @@ class WikidataVDB_Search(
             **kwargs: Any
     ) -> None:
         self._rerank = rerank
+        self._aclient_loop: asyncio.AbstractEventLoop | None = None
         super().__init__(search_name, *args, **kwargs)
 
     @override
@@ -70,6 +75,37 @@ class WikidataVDB_Search(
             options: TOptions
     ) -> Iterator[WikidataVDB_Search.TData]:
         return self._x_data('property', search, options)
+
+    @override
+    def _aitem_data(
+            self,
+            search: str,
+            options: TOptions
+    ) -> AsyncIterator[WikidataVDB_Search.TData]:
+        return self._ax_data('item', search, options)
+
+    @override
+    def _aproperty_data(
+            self,
+            search: str,
+            options: TOptions
+    ) -> AsyncIterator[WikidataVDB_Search.TData]:
+        return self._ax_data('property', search, options)
+
+    @override
+    def get_aclient(self) -> httpx.AsyncClient:
+        """The async HTTP client, recreated when the event loop changes.
+
+        An `httpx.AsyncClient` cannot be reused across event loops (each
+        `asyncio.run` creates a new one), so it is tied to the running loop.
+        """
+        loop = asyncio.get_running_loop()
+        if self._aclient is not None and self._aclient_loop is not loop:
+            self._aclient = None        # bound to a previous (closed) loop
+        if self._aclient is None:
+            self._aclient = httpx.AsyncClient(headers=self._headers)
+            self._aclient_loop = loop
+        return self._aclient
 
     @override
     def _check_options(
@@ -98,68 +134,73 @@ class WikidataVDB_Search(
         search: str,
         options: TOptions
     ) -> Iterator[WikidataVDB_Search.TData]:
+        iri, language, limit, _, timeout = self._check_options(type, options)
+        response = self._http_get_json(
+            iri.content, params=self._x_params(search, language),
+            timeout=timeout)
+        results, ids = self._x_results(response, type, limit, options)
+        if not ids:
+            return
+        metadata = self._get_wikidata_entities(ids, language, timeout)
+        yield from self._x_normalize(results, metadata, type, language)
 
-        iri, language, limit, _, timeout = self._check_options(
-            type,
-            options
-        )
+    async def _ax_data(
+        self,
+        type: Literal['item', 'lexeme', 'property'],
+        search: str,
+        options: TOptions
+    ) -> AsyncIterator[WikidataVDB_Search.TData]:
+        iri, language, limit, _, timeout = self._check_options(type, options)
+        response = await self._http_aget_json(
+            iri.content, params=self._x_params(search, language),
+            timeout=timeout)
+        results, ids = self._x_results(response, type, limit, options)
+        if not ids:
+            return
+        metadata = await self._aget_wikidata_entities(ids, language, timeout)
+        for data in self._x_normalize(results, metadata, type, language):
+            yield data
 
-        params = {
+    def _x_params(self, search: str, language: str) -> dict[str, str]:
+        """Query parameters of the vector database endpoint."""
+        return {
             'query': search,
             'lang': language,
             'rerank': str(self._rerank).lower(),
         }
 
-        response = self._http_get_json(
-            iri.content,
-            params=params,
-            timeout=timeout
-        )
-
-        results = cast(
-            list[Mapping[str, Any]],
-            response
-        )
-
+    def _x_results(
+        self,
+        response: Any,
+        type: Literal['item', 'lexeme', 'property'],
+        limit: int | None,
+        options: TOptions,
+    ) -> tuple[list[Mapping[str, Any]], list[str]]:
+        """The (limited) results of a query and their entity ids."""
+        results = cast(list[Mapping[str, Any]], response)
         if limit is None:
             limit = options.max_limit
-
         results = results[:limit]
+        ids = [i for i in (self._get_entity_id(r, type) for r in results)
+               if i is not None]
+        return results, ids
 
-        ids: list[str] = []
-
+    def _x_normalize(
+        self,
+        results: list[Mapping[str, Any]],
+        metadata: dict[str, dict[str, Any]],
+        type: Literal['item', 'lexeme', 'property'],
+        language: str,
+    ) -> Iterator[WikidataVDB_Search.TData]:
+        """Joins query results with their Wikidata metadata."""
         for result in results:
             entity_id = self._get_entity_id(result, type)
-
-            if entity_id is not None:
-                ids.append(entity_id)
-
-        if not ids:
-            return
-
-        metadata = self._get_wikidata_entities(
-            ids,
-            language,
-            timeout
-        )
-
-        for result in results:
-            entity_id = self._get_entity_id(result, type)
-
             if entity_id is None:
                 continue
-
             entity = metadata.get(entity_id)
-
             if entity is None:
                 continue
-
-            yield self._normalize_entity(
-                entity,
-                result,
-                type,
-                language
-            )
+            yield self._normalize_entity(entity, result, type, language)
 
     def _get_entity_id(
             self,
@@ -178,36 +219,49 @@ class WikidataVDB_Search(
         language: str,
         timeout: float | None
     ) -> dict[str, dict[str, Any]]:
-
         entities: dict[str, dict[str, Any]] = {}
+        for params in self._entities_params(ids, language):
+            response = self._http_get_json(
+                self.WIKIDATA_ENDPOINT, params=params, timeout=timeout)
+            entities.update(self._entities_of(response))
+        return entities
 
+    async def _aget_wikidata_entities(
+        self,
+        ids: list[str],
+        language: str,
+        timeout: float | None
+    ) -> dict[str, dict[str, Any]]:
+        responses = await asyncio.gather(*(
+            self._http_aget_json(
+                self.WIKIDATA_ENDPOINT, params=params, timeout=timeout)
+            for params in self._entities_params(ids, language)))
+        entities: dict[str, dict[str, Any]] = {}
+        for response in responses:
+            entities.update(self._entities_of(response))
+        return entities
+
+    def _entities_params(
+            self, ids: list[str], language: str) -> Iterator[dict[str, str]]:
+        """`wbgetentities` parameters, one dict per batch of ids."""
         for i in range(0, len(ids), self.METADATA_BATCH_SIZE):
-            batch = ids[i:i + self.METADATA_BATCH_SIZE]
-
-            params = {
+            yield {
                 'action': 'wbgetentities',
                 'format': 'json',
-                'ids': '|'.join(batch),
+                'ids': '|'.join(ids[i:i + self.METADATA_BATCH_SIZE]),
                 'props': 'labels|descriptions|aliases|claims',
                 'languages': language,
                 'languagefallback': '1',
                 'origin': '*',
             }
 
-            response = self._http_get_json(
-                self.WIKIDATA_ENDPOINT,
-                params=params,
-                timeout=timeout
-            )
-
-            for entity_id, entity in response.get(
-                'entities', {}
-            ).items():
-
-                if 'missing' not in entity:
-                    entities[entity_id] = entity
-
-        return entities
+    @staticmethod
+    def _entities_of(response: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+        return {
+            entity_id: entity
+            for entity_id, entity in response.get('entities', {}).items()
+            if 'missing' not in entity
+        }
 
     def _normalize_entity(
         self,

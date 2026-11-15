@@ -97,56 +97,56 @@ class LLMTripleExtractor(TripleExtractor, strategy_name='llm'):
 
         Args:
             text (str): Input text.
+            prompt (str, optional): System prompt replacing the default one.
 
         Returns:
             list[Triple]: List of extracted triples.
         """
-        return self.__llm_triple_extraction(text, prompt)
+        chain = self._chain(prompt)
+        try:
+            return chain.invoke({'text': text})
+        except Exception as e:
+            LOG.warning(f'Exception occurred while extracting triples: {e}')
+            raise
 
-    def __llm_triple_extraction(self, text: str, prompt = None) -> list[Triple]:
-        """Internal method that runs the LLM extraction chain.
+    async def _aextract(self, text, prompt = None) -> list[Triple]:
+        """Async version of `_extract`, using the model's native `ainvoke`."""
+        chain = self._chain(prompt)
+        try:
+            return await chain.ainvoke({'text': text})
+        except Exception as e:
+            LOG.warning(f'Exception occurred while extracting triples: {e}')
+            raise
+
+    def _chain(self, prompt = None):
+        """Builds the extraction chain (prompt | model | parser).
 
         Args:
-            text (str): Input text.
-
-        Returns:
-            list[Triple]: List of extracted triples.
-
-        Raises:
-            Exception: Propagates any error raised while invoking the LLM chain.
+            prompt (str, optional): System prompt replacing the default one.
         """
-        try:
-            s_template = prompt if prompt is not None else (TE_DEFAULT_PROMPT + '\n\nExamples:\n' + TE_DEFAULT_EXAMPLES)
+        s_template = prompt if prompt is not None else (TE_DEFAULT_PROMPT + '\n\nExamples:\n' + TE_DEFAULT_EXAMPLES)
 
-            u_template = dedent("""Now follow the format strictly.
+        u_template = dedent("""Now follow the format strictly.
 
 Input:
     Text: "{text}"
 
 Output:""")
 
-            from langchain_core.prompts import ChatPromptTemplate
-            prompt_template = ChatPromptTemplate.from_messages([
-                ('system', s_template), ('human', u_template)
-            ])
+        from langchain_core.prompts import ChatPromptTemplate
+        prompt_template = ChatPromptTemplate.from_messages([
+            ('system', s_template), ('human', u_template)
+        ])
 
-            from langchain_core.runnables import RunnableLambda
+        from langchain_core.runnables import RunnableLambda
 
-            debug = RunnableLambda(lambda entry:
-                                    (LOG.debug(entry), entry)[1])
+        debug = RunnableLambda(lambda entry:
+                                (LOG.debug(entry), entry)[1])
 
-            parser = TripleOutputParser()
-            chain = (prompt_template
-                        | debug
-                        | self.model
-                        | debug
-                        | parser
-                        | debug)
-
-            triples = chain.invoke({'text': text})
-
-            return triples
-
-        except Exception as e:
-            LOG.warning(f'Exception occurred while extracting triples: {e}')
-            raise e
+        parser = TripleOutputParser()
+        return (prompt_template
+                    | debug
+                    | self.model
+                    | debug
+                    | parser
+                    | debug)

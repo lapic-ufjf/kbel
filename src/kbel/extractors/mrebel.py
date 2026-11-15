@@ -3,8 +3,10 @@
 
 import logging
 import re
+import threading
 from typing import Any
 
+from kbel.core.text import split_sentences
 from kbel.core.triple import Triple
 
 from .abc import TripleExtractor
@@ -104,7 +106,7 @@ class MREBELTripleExtractor(
         except ImportError as e:
             raise ImportError(
                 "mREBEL requires PyTorch and Transformers. "
-                "Install them with: pip install torch transformers sentencepiece"
+                "Install them with: pip install 'kbel[mrebel]'"
             ) from e
 
         if max_input_length < 1 or max_output_length < 1:
@@ -131,6 +133,8 @@ class MREBELTripleExtractor(
         self._num_return_sequences = num_return_sequences
         self._split_sentences = split_sentences
         self._batch_size = batch_size
+        # Hugging Face fast tokenizers are not thread-safe.
+        self._lock = threading.Lock()
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -273,45 +277,38 @@ class MREBELTripleExtractor(
         save()
         return triplets
     
-    # Sentence boundary: [.!?…] followed by whitespace, unless the next
-    # word starts in lowercase (e.g. "e.g. foo"); blank lines also split.
-    _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?…])\s+(?![a-z])|\n\s*\n")
-
-    @classmethod
-    def _split_into_sentences(cls, text: str) -> list[str]:
-        """Split a text into sentences with a light regex heuristic."""
-        return [
-            s.strip()
-            for s in cls._SENTENCE_BOUNDARY.split(text)
-            if s and s.strip()
-        ]
+    @staticmethod
+    def _split_into_sentences(text: str) -> list[str]:
+        """Split a text into sentences (see `kbel.core.text.split_sentences`)."""
+        return split_sentences(text)
 
     def _generate(self, texts: list[str]) -> list[str]:
         """Run mREBEL on a batch of texts; returns all decoded beams."""
-        inputs = self._tokenizer(
-            texts,
-            max_length=self._max_input_length,
-            truncation=True,
-            padding=True,
-            return_tensors="pt",
-        ).to(self._device)
+        with self._lock:
+            inputs = self._tokenizer(
+                texts,
+                max_length=self._max_input_length,
+                truncation=True,
+                padding=True,
+                return_tensors="pt",
+            ).to(self._device)
 
-        # Same generation settings as the reference code.
-        with self._torch.inference_mode():
-            generated = self._model.generate(
-                inputs["input_ids"],
-                attention_mask=inputs["attention_mask"],
-                max_length=self._max_output_length,
-                num_beams=self._num_beams,
-                num_return_sequences=self._num_return_sequences,
-                length_penalty=0,
-                forced_bos_token_id=None,
-                decoder_start_token_id=self._decoder_start_token_id,
+            # Same generation settings as the reference code.
+            with self._torch.inference_mode():
+                generated = self._model.generate(
+                    inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_length=self._max_output_length,
+                    num_beams=self._num_beams,
+                    num_return_sequences=self._num_return_sequences,
+                    length_penalty=0,
+                    forced_bos_token_id=None,
+                    decoder_start_token_id=self._decoder_start_token_id,
+                )
+
+            return self._tokenizer.batch_decode(
+                generated, skip_special_tokens=False
             )
-
-        return self._tokenizer.batch_decode(
-            generated, skip_special_tokens=False
-        )
 
     def _extract(self, text: str, prompt: Any = None) -> list[Triple]:
         if prompt is not None:

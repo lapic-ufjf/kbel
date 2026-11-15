@@ -122,55 +122,62 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
             list[DisambiguationResult]: List of disambiguation results.
         """
 
-        assert mention.term, 'Mention term can not be undefined.'
+        chain, inputs = self._prepare(mention, candidates)
+        try:
+            entity_ids = chain.invoke(inputs)
+        except Exception as e:
+            LOG.warning(f'Exceptions occured while disambiguating the term `{mention.term}`: {e}')
+            raise
+        return self._results(mention, candidates, entity_ids, limit)
 
-        assert mention.text, 'Mention text can not be undefined.'
+    async def _adisambiguate(
+        self,
+        mention: Mention,
+        candidates: list[Candidate],
+        limit=100,
+        *args,
+        **kwargs,
+    ) -> list[DisambiguationResult]:
+        """Async version of `_disambiguate`, using the model's native `ainvoke`."""
+        chain, inputs = self._prepare(mention, candidates)
+        try:
+            entity_ids = await chain.ainvoke(inputs)
+        except Exception as e:
+            LOG.warning(f'Exceptions occured while disambiguating the term `{mention.term}`: {e}')
+            raise
+        return self._results(mention, candidates, entity_ids, limit)
 
-        return self.__llm_entity_disambiguation(
-            mention,
-            candidates,
-            limit=limit)
-
-    def __llm_entity_disambiguation(
+    def _prepare(
             self,
             mention: Mention,
             candidates: list[Candidate],
-            limit: Optional[int] = None
-    ) -> list[DisambiguationResult]:
-        """Internal method that executes the LLM-based disambiguation.
-
-        Constructs a prompt with candidates and optional context, invokes the LLM,
-        parses the output, and returns the selected candidate(s).
-
-        Args:
-            mention (Mention): The mention to disambiguate.
-            candidates (list[Candidate]): Candidate entities.
-            limit (Optional[int]): Maximum number of results to return.
+    ) -> tuple[Any, dict[str, Any]]:
+        """Builds the LLM chain and its inputs for a mention.
 
         Returns:
-            list[DisambiguationResult]: List of disambiguation results.
-
-        Raises:
-            ValueError: If the LLM cannot disambiguate the term among the candidates.
+            (chain, inputs): A LangChain runnable (prompt | model | parser)
+            and the variables to invoke it with.
         """
-        assert candidates and len(candidates) > 0, f'No candidates to disambiguate the label `{mention.term}`'
-        try:
-            c_prompt = ''
-            for candidate in candidates:
-                c_prompt += f'        ID: {candidate.id}'
+        assert mention.term, 'Mention term can not be undefined.'
+        assert mention.text, 'Mention text can not be undefined.'
+        assert candidates, f'No candidates to disambiguate the label `{mention.term}`'
 
-                c_label = candidate.label
-                if mention.term:
-                    c_label = c_label.strip()
-                    c_prompt += f'\n        Term: {c_label}'
-                description = candidate.description
-                if description:
-                    description = description.strip()
-                    c_prompt += f'\n        Description: {description}'  # noqa E501
-                c_prompt += '\n\n'
-            s_template = EL_DEFAULT_PROMPT + '\n\nExamples:\n' + EL_DEFAULT_EXAMPLES
-            context_template = 'Context: {context}' if mention.context else ''
-            u_template = dedent(f"""Now follow the format strictly.\n
+        c_prompt = ''
+        for candidate in candidates:
+            c_prompt += f'        ID: {candidate.id}'
+
+            c_label = candidate.label
+            if mention.term:
+                c_label = c_label.strip()
+                c_prompt += f'\n        Term: {c_label}'
+            description = candidate.description
+            if description:
+                description = description.strip()
+                c_prompt += f'\n        Description: {description}'  # noqa E501
+            c_prompt += '\n\n'
+        s_template = EL_DEFAULT_PROMPT + '\n\nExamples:\n' + EL_DEFAULT_EXAMPLES
+        context_template = 'Context: {context}' if mention.context else ''
+        u_template = dedent(f"""Now follow the format strictly.\n
 Input:
     Sentence: "{{sentence}}"
     Term: "{{term}}"
@@ -179,41 +186,50 @@ Input:
     Candidates:
 {{candidates}}
 Output:""")
-            from langchain_core.prompts import ChatPromptTemplate
-            promp_template = ChatPromptTemplate.from_messages([
-                ('system', s_template), ('human', u_template)
-            ])
+        from langchain_core.prompts import ChatPromptTemplate
+        promp_template = ChatPromptTemplate.from_messages([
+            ('system', s_template), ('human', u_template)
+        ])
 
-            from langchain_core.runnables import RunnableLambda
+        from langchain_core.runnables import RunnableLambda
 
-            debug = RunnableLambda(lambda entry:
-                                    (LOG.debug(entry), entry)[1])
+        debug = RunnableLambda(lambda entry:
+                                (LOG.debug(entry), entry)[1])
 
-            parser = CommaSeparatedListOutputParserSet()
-            chain = (promp_template
-                        | debug
-                        | self.model
-                        | debug
-                        | parser
-                        | debug)
+        parser = CommaSeparatedListOutputParserSet()
+        chain = (promp_template
+                    | debug
+                    | self.model
+                    | debug
+                    | parser
+                    | debug)
 
-            entity_ids = chain.invoke({
-                'context': mention.context,
-                'sentence': mention.text,
-                'term': mention.term,
-                'candidates': c_prompt,
-            })
-            by_id = {c.id: c for c in candidates if c.id}
-            disamb_entities = [
-                DisambiguationResult(candidate=by_id[i])
-                for i in entity_ids if i in by_id
-            ]
-            if disamb_entities:
-                return disamb_entities[:limit] if limit else disamb_entities
-            LOG.warning('term=%r raw_ids=%r candidate_ids=%r',
-                        mention.term, entity_ids, list(by_id)[:5])
-            raise ValueError(f'Could not disambiguate the term `{mention.term}` among the candidates.')
+        return chain, {
+            'context': mention.context,
+            'sentence': mention.text,
+            'term': mention.term,
+            'candidates': c_prompt,
+        }
 
-        except Exception as e:
-            logging.warning(f'Exceptions occured while disambiguating the term `{mention.term}`: {e}')
-            raise e
+    @staticmethod
+    def _results(
+            mention: Mention,
+            candidates: list[Candidate],
+            entity_ids: list[str],
+            limit: Optional[int] = None,
+    ) -> list[DisambiguationResult]:
+        """Maps the IDs chosen by the LLM back to the candidates.
+
+        Raises:
+            ValueError: If the LLM did not choose any of the candidates.
+        """
+        by_id = {c.id: c for c in candidates if c.id}
+        disamb_entities = [
+            DisambiguationResult(candidate=by_id[i])
+            for i in entity_ids if i in by_id
+        ]
+        if disamb_entities:
+            return disamb_entities[:limit] if limit else disamb_entities
+        LOG.warning('term=%r raw_ids=%r candidate_ids=%r',
+                    mention.term, entity_ids, list(by_id)[:5])
+        raise ValueError(f'Could not disambiguate the term `{mention.term}` among the candidates.')

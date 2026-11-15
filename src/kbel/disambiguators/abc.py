@@ -1,9 +1,10 @@
 # Copyright 2026 LApIC
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import logging
 from abc import abstractmethod
-from typing import (Any, AsyncIterator, ClassVar, Final)
+from typing import (Any, ClassVar, Final)
 
 from kif_lib import KIF_Object
 
@@ -18,6 +19,10 @@ class Disambiguator:
 
     Subclasses must implement the `_disambiguate` method, which contains the
     logic to select the correct entity among a list of candidates.
+
+    `adisambiguate` is the async counterpart of `disambiguate`. By default
+    it runs `_disambiguate` in a worker thread; subclasses with a natively
+    async backend (e.g. an LLM client) override `_adisambiguate`.
 
     Parameters:
         strategy_name (str): Name of the disambiguation strategy plugin.
@@ -93,21 +98,38 @@ class Disambiguator:
         limit: int = 10,
         *args: Any,
         **kwargs: Any,
-    ) -> AsyncIterator[DisambiguationResult]:
+    ) -> list[DisambiguationResult]:
         """Asynchronously disambiguates a list of candidates.
+
+        Same contract as `disambiguate`, without blocking the event loop.
 
         Args:
             mention (Mention): The mention to disambiguate.
             candidates (list[Candidate]): Candidate entities.
             limit (int, optional): Maximum number of candidates to return. Defaults to 10.
 
-        Yields:
-            AsyncIterator[DisambiguationResult]: Disambiguation results.
+        Returns:
+            list[DisambiguationResult]: List of disambiguation results.
         """
-        results = self.disambiguate(mention, candidates, limit, *args, **kwargs)
+        assert len(candidates) > 0, 'No candidates to disambiguate'
 
-        for result in results:
-            yield result
+        return await self._adisambiguate(mention, candidates, limit, *args, **kwargs)
+
+    async def _adisambiguate(
+        self,
+        mention: Mention,
+        candidates: list[Candidate],
+        limit: int,
+        *args: Any,
+        **kwargs: Any
+    ) -> list[DisambiguationResult]:
+        """Async disambiguation logic.
+
+        The default runs the (blocking) `_disambiguate` in a worker thread.
+        Override it when the strategy has a natively async implementation.
+        """
+        return await asyncio.to_thread(
+            self._disambiguate, mention, candidates, limit, *args, **kwargs)
 
 
     @abstractmethod

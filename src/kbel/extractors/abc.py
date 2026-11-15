@@ -1,6 +1,7 @@
 # Copyright 2026 LApIC
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import logging
 import shutil
 import subprocess
@@ -21,6 +22,11 @@ class TripleExtractor:
 
     Subclasses must implement the `_extract` method, which contains the
     logic to extract subject-predicate-object triples from a text.
+
+    `aextract` is the async counterpart of `extract`. By default it runs
+    `_extract` in a worker thread; subclasses with a natively async backend
+    (e.g. an LLM client) override `_aextract`. Extractors may be called
+    from several threads at once, so `_extract` must be thread-safe.
 
     Parameters:
         strategy_name (str): Name of the extraction strategy plugin.
@@ -90,6 +96,27 @@ class TripleExtractor:
 
         if self._graph if graph is None else graph:
             self.to_graphviz(triples, graph_path or self._graph_path)
+
+        return triples
+
+    async def aextract(
+        self,
+        text: str,
+        prompt=None,
+        graph: bool | None = None,
+        graph_path: str | Path | None = None,
+    ) -> list[Triple]:
+        """Asynchronously extracts triples from a text.
+
+        Same contract as `extract`, without blocking the event loop.
+        """
+        assert text and text.strip(), 'No text to extract triples from'
+
+        triples = await self._aextract(text, prompt)
+
+        if self._graph if graph is None else graph:
+            await asyncio.to_thread(
+                self.to_graphviz, triples, graph_path or self._graph_path)
 
         return triples
 
@@ -174,3 +201,11 @@ class TripleExtractor:
             list[Triple]: List of extracted triples.
         """
         ...
+
+    async def _aextract(self, text: str, prompt=None) -> list[Triple]:
+        """Async extraction logic.
+
+        The default runs the (blocking) `_extract` in a worker thread.
+        Override it when the extractor has a natively async implementation.
+        """
+        return await asyncio.to_thread(self._extract, text, prompt)
