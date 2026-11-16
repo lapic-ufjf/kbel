@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from textwrap import dedent
 from typing import Any, Literal, Optional, TYPE_CHECKING
 
 from kbel.core.triple import Triple
@@ -44,7 +43,7 @@ class LLMTripleExtractor(TripleExtractor, strategy_name='llm'):
         model: Optional["BaseChatModel"] = None,
         model_name: Optional[str] = None,
         model_provider: Optional[Literal['ibm', 'openai', 'ollama']] = None,
-        model_params: dict[str, Any] = {},
+        model_params: Optional[dict[str, Any]] = None,
         model_apikey: Optional[str] = None,
         model_endpoint: Optional[str] = None,
     ):
@@ -59,7 +58,7 @@ class LLMTripleExtractor(TripleExtractor, strategy_name='llm'):
             model_name (Optional[str]): Name of the model to load if `model` is None.
             model_provider (Optional[Literal['ibm', 'openai', 'ollama']]): LLM provider.
             model_params (dict[str, Any]): Additional parameters for building the model.
-            model_apikey (Optional[str]): API key for model access.
+            model_apikey (Optional[str]): API key for model access (not needed by ollama).
             model_endpoint (Optional[str]): Endpoint for the LLM.
         """
         try:
@@ -74,19 +73,15 @@ class LLMTripleExtractor(TripleExtractor, strategy_name='llm'):
         assert strategy_name == self.strategy_name
         super().__init__()
 
-        if model:
+        if model is not None:
             self._model = model
         else:
-            assert model_name and model_provider and model_endpoint and model_apikey
-            _model = build_model(
+            self._model = build_model(
                 model_name=model_name,
                 provider=model_provider,
                 endpoint=model_endpoint,
                 apikey=model_apikey,
-                **model_params)
-
-            assert _model
-            self._model = _model
+                **(model_params or {}))
 
     @property
     def model(self) -> "BaseChatModel":
@@ -123,30 +118,20 @@ class LLMTripleExtractor(TripleExtractor, strategy_name='llm'):
 
         Args:
             prompt (str, optional): System prompt replacing the default one.
+                It is used verbatim, so it may contain braces (e.g. a JSON
+                example); the answer may be the default line format or a
+                JSON list of {"subject", "predicate", "object"} objects.
         """
-        s_template = prompt if prompt is not None else (TE_DEFAULT_PROMPT + '\n\nExamples:\n' + TE_DEFAULT_EXAMPLES)
-
-        u_template = dedent("""Now follow the format strictly.
-
-Input:
-    Text: "{text}"
-
-Output:""")
-
-        from langchain_core.prompts import ChatPromptTemplate
-        prompt_template = ChatPromptTemplate.from_messages([
-            ('system', s_template), ('human', u_template)
-        ])
-
+        from langchain_core.messages import SystemMessage
+        from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
         from langchain_core.runnables import RunnableLambda
 
-        debug = RunnableLambda(lambda entry:
-                                (LOG.debug(entry), entry)[1])
-
-        parser = TripleOutputParser()
-        return (prompt_template
-                    | debug
-                    | self.model
-                    | debug
-                    | parser
-                    | debug)
+        system = prompt if prompt is not None else (
+            TE_DEFAULT_PROMPT + '\n\nExamples:\n' + TE_DEFAULT_EXAMPLES)
+        human = 'Now follow the format strictly.\n\nInput:\n    Text: "{text}"\n\nOutput:'
+        prompt_template = ChatPromptTemplate.from_messages([
+            SystemMessage(content=system),
+            HumanMessagePromptTemplate.from_template(human),
+        ])
+        debug = RunnableLambda(lambda entry: (LOG.debug(entry), entry)[1])
+        return prompt_template | debug | self.model | debug | TripleOutputParser() | debug

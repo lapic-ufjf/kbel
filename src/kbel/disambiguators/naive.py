@@ -13,19 +13,20 @@ LOG = logging.getLogger(__name__)
 
 
 class NaiveDisambiguator(Disambiguator, strategy_name='naive'):
-    """Naive disambiguator always returns the first candidate.
+    """Picks the candidate whose label is the mention's term, else the first.
 
-    This is the most basic implementation of a disambiguator plugin. It
-    ignores the `limit` parameter and selects only the top candidate
-    from the provided list.
+    The simplest strategy: it trusts the order of the search results and
+    only prefers a candidate with exactly the same label (ignoring case).
+    It always returns a single result, whatever the `limit`.
 
     Example:
-        >>> disamb = NaiveDisambiguator('naive')
+        >>> disambiguator = Disambiguator('naive')
         >>> candidates = [
-        ...     {"label": "Python", "description": "Programming language", "iri": "https://www.wikidata.org/wiki/Q28865"}
+        ...     Candidate(iri='http://www.wikidata.org/entity/Q271218', label='Python (genus)'),
+        ...     Candidate(iri='http://www.wikidata.org/entity/Q28865', label='Python'),
         ... ]
-        >>> disamb._disambiguate("Python", candidates, limit=1)
-        [DisambiguationResult(iri='https://www.wikidata.org/wiki/Q28865', score=1.0)]
+        >>> disambiguator.disambiguate(Mention(term='Python', text='Python is a language.'), candidates)
+        [DisambiguationResult(candidate=Candidate(iri='http://www.wikidata.org/entity/Q28865', ...), score=None)]
     """
 
     def _disambiguate(
@@ -50,8 +51,9 @@ class NaiveDisambiguator(Disambiguator, strategy_name='naive'):
 
         if limit > 1:
             LOG.debug('Limit has no effect here. This method always returns the top 1 candidate.')
+        term = mention.term.strip().lower()
         for candidate in candidates:
-           if candidate.label.lower() == mention.term.lower():
+            if (candidate.label or '').strip().lower() == term:
                 return [DisambiguationResult(candidate=candidate)]
-           
+
         return [DisambiguationResult(candidate=candidates[0])]

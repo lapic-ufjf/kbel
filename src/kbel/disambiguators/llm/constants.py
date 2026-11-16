@@ -14,7 +14,7 @@ Rules:
 
 3. Output Format:
 
-- if there’s a match, your response should be a list of comma separated IDs, eg: `C102, C103, C110` or `C102,C103,C110`
+- if there’s a match, your response should be a list of comma separated IDs, e.g. `C2` or `C2, C3, C5`
 
 -  Do not include any extra explanations."""
 
@@ -24,42 +24,42 @@ Input:
     Term: "Paris"
 
     Candidates:
-        ID: C101
+        ID: C1
         Term: Paris
         Description: capital city and largest city of France
 
-        ID: C102
+        ID: C2
         Term: Paris Saint-Germain FC
         Description: association football club in Paris, France
 
-        ID: C103
+        ID: C3
         Term: Paris
         Description: genus of plants
 
-Output: C101
+Output: C1
 
 Input:
     Sentence: "Where was James Brown born?"
     Term: "James Brown"
 
     Candidates:
-        ID: C101
+        ID: C1
         Term: James Brown
         Description: American musician (1933–2006)
 
-        ID: C102
+        ID: C2
         Term: James H. Brown
         Description: American biologist and academic
 
-        ID: C103
+        ID: C3
         Term: James Brown
         Description: American-born painter active in Paris and Oaxaca (Mexico) (1951-2020)
 
-        ID: C104
+        ID: C4
         Term: Joao
         Description: researcher
 
-Output: C101, C102, C103
+Output: C1, C2, C3
 
 Input:
     Sentence: "It was first released in 1991."
@@ -67,27 +67,27 @@ Input:
     Term: "It"
 
     Candidates:
-        ID: E101
+        ID: C1
         Term: Python
         Description: general-purpose programming language
 
-        ID: E102
+        ID: C2
         Term: Python
         Description: genus of reptiles
 
-Output: E101
+Output: C1
 
 Input:
     Sentence: "Marie Curie was born in Warsaw"
     Term: "was born in"
 
     Candidates:
-        ID: D101
+        ID: C1
         Term: place of birth
         Description: most specific known birth location of a person
 
-        ID: D102
+        ID: C2
         Term: date of birth
         Description: date on which the subject was born
 
-Output: D101"""
+Output: C1"""

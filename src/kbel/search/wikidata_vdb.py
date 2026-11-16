@@ -33,7 +33,13 @@ class WikidataVDB_Search(
         search_name='wikidata-vdb',
         search_description='Wikidata Vector Database search'
 ):
-    """Wikidata search using the Wikidata Vector Database."""
+    """Wikidata search using the Wikidata Vector Database.
+
+    Replaces KIF's plugin of the same name, adding the async API and
+    fetching only labels, descriptions and aliases of the results. Entities
+    use Wikidata's canonical ``http://www.wikidata.org/entity/`` IRIs, like
+    the ``wikidata`` search.
+    """
 
     PROPERTY_ENDPOINT: ClassVar[str] = (
         'https://wd-vectordb.wmcloud.org/property/query/'
@@ -48,6 +54,8 @@ class WikidataVDB_Search(
     )
 
     METADATA_BATCH_SIZE: ClassVar[int] = 50
+
+    ENTITY_NAMESPACE: ClassVar[str] = 'http://www.wikidata.org/entity/'
 
     def __init__(
             self,
@@ -249,7 +257,7 @@ class WikidataVDB_Search(
                 'action': 'wbgetentities',
                 'format': 'json',
                 'ids': '|'.join(ids[i:i + self.METADATA_BATCH_SIZE]),
-                'props': 'labels|descriptions|aliases|claims',
+                'props': 'labels|descriptions|aliases|datatype',
                 'languages': language,
                 'languagefallback': '1',
                 'origin': '*',
@@ -275,9 +283,7 @@ class WikidataVDB_Search(
 
         data: WikidataVDB_Search.TData = {
             'id': entity_id,
-            'concepturi': (
-                f'https://www.wikidata.org/entity/{entity_id}'
-            ),
+            'concepturi': f'{self.ENTITY_NAMESPACE}{entity_id}',
             'language': language,
         }
 

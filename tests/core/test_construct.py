@@ -158,9 +158,9 @@ def test_stopping_early_cancels_pending_work(setup):
         break                         # only the first statement
     elapsed = time.perf_counter() - start
 
-    # One slot: sentences run one after the other; after the first statement
-    # the remaining extraction is cancelled instead of waited for.
-    assert len(extractor.calls) < len(SCRIPT)
+    calls = len(extractor.calls)
+    time.sleep(0.6)
+    assert len(extractor.calls) == calls
     assert elapsed < len(SCRIPT) * 0.3
 
 

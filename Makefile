@@ -7,7 +7,7 @@ PYTHON ?= $(if $(wildcard venv/bin/python),venv/bin/python,$(if $(wildcard .venv
 # Files/directories checked for the license header.
 LICENSE_PATHS ?= src tests scripts
 
-.PHONY: help license-check license-add test evaluate
+.PHONY: help license-check license-add test evaluate evaluate-docred
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -24,3 +24,7 @@ test:  ## Run the test suite
 
 evaluate:  ## Evaluate on T-REx: make evaluate ARGS="--limit 20 --extractor mrebel"
 	$(PYTHON) scripts/evaluate_trex.py run $(ARGS)
+
+evaluate-docred:  ## Evaluate on DocRED: make evaluate-docred ARGS="--limit 10 --extractor relik"
+	$(PYTHON) scripts/evaluate_docred.py download
+	$(PYTHON) scripts/evaluate_docred.py run $(ARGS)

@@ -1,7 +1,6 @@
 # Copyright 2026 LApIC
 # SPDX-License-Identifier: Apache-2.0
 
-import functools
 import logging
 from textwrap import dedent
 from typing import Any, Literal, Optional, TYPE_CHECKING
@@ -51,7 +50,7 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
         model: Optional["BaseChatModel"] = None,
         model_name: Optional[str] = None,
         model_provider: Optional[Literal['ibm', 'openai', 'ollama']] = None,
-        model_params: dict[str, Any] = {},
+        model_params: Optional[dict[str, Any]] = None,
         model_apikey: Optional[str] = None,
         model_endpoint: Optional[str] = None,
     ):
@@ -66,7 +65,7 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
             model_name (Optional[str]): Name of the model to load if `model` is None.
             model_provider (Optional[Literal['ibm', 'openai', 'ollama']]): LLM provider.
             model_params (dict[str, Any]): Additional parameters for building the model.
-            model_apikey (Optional[str]): API key for model access.
+            model_apikey (Optional[str]): API key for model access (not needed by ollama).
             model_endpoint (Optional[str]): Endpoint for the LLM.
             *args: Additional positional arguments for the base Disambiguator.
             **kwargs: Additional keyword arguments for the base Disambiguator.
@@ -83,19 +82,16 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
         assert strategy_name == self.strategy_name
         super().__init__()
 
-        if model:
+        if model is not None:
             self._model = model
         else:
-            assert model_name and model_provider and model_endpoint and model_apikey
-            _model = build_model(
+            self._model = build_model(
                 model_name=model_name,
                 provider=model_provider,
                 endpoint=model_endpoint,
                 apikey=model_apikey,
-                **model_params)
-
-            assert _model
-            self._model = _model
+                **(model_params or {}))
+        self._chains: dict[bool, Any] = {}
 
     @property
     def model(self) -> "BaseChatModel":
@@ -164,10 +160,10 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
         assert candidates, f'No candidates to disambiguate the label `{mention.term}`'
 
         c_prompt = ''.join(
-            f'        ID: {c.id}\n        Term: {c.label.strip()}\n'
+            f'        ID: C{i}\n        Term: {(c.label or "").strip()}\n'
             + (f'        Description: {c.description.strip()}\n' if c.description else '')
             + '\n'
-            for c in candidates)
+            for i, c in enumerate(candidates, 1))
         context = mention.context if mention.context and mention.context != mention.text else None
         return self._chain(bool(context)), {
             'context': context,
@@ -176,9 +172,10 @@ class LLM_Disambiguator(Disambiguator, strategy_name='llm'):
             'candidates': c_prompt,
         }
 
-    @functools.cache
     def _chain(self, with_context: bool) -> Any:
         """The prompt | model | parser chain, built once per prompt shape."""
+        if with_context in self._chains:
+            return self._chains[with_context]
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_core.runnables import RunnableLambda
 
@@ -196,8 +193,29 @@ Output:""")
             ('human', u_template),
         ])
         debug = RunnableLambda(lambda entry: (LOG.debug(entry), entry)[1])
-        return (prompt_template | debug | self.model | debug
-                | CommaSeparatedListOutputParserSet() | debug)
+        chain = self._chains[with_context] = (
+            prompt_template | debug | self.model | debug
+            | CommaSeparatedListOutputParserSet() | debug)
+        return chain
+
+    @staticmethod
+    def _by_answer(candidates: list[Candidate]) -> dict[str, Candidate]:
+        """The answers accepted for each candidate, lowercased.
+
+        The prompt numbers the candidates (``C1``, ``C2``, ...), so the LLM
+        never has to copy an IRI. Answers with the candidate's own id, its
+        IRI or the last part of either (``Q42``) are accepted as well.
+        """
+        by_answer: dict[str, Candidate] = {}
+        for c in candidates:
+            for key in (c.id, c.iri):
+                for form in (key, (key or '').rstrip('/').rsplit('/', 1)[-1]):
+                    if form:
+                        by_answer.setdefault(form.lower(), c)
+        for i, c in enumerate(candidates, 1):
+            by_answer[f'c{i}'] = c
+        return by_answer
+
     @staticmethod
     def _results(
             mention: Mention,
@@ -207,16 +225,25 @@ Output:""")
     ) -> list[DisambiguationResult]:
         """Maps the IDs chosen by the LLM back to the candidates.
 
+        An empty answer (or ``NONE``) means that the LLM found no candidate
+        matching the mention: the result is an empty list.
+
         Raises:
-            ValueError: If the LLM did not choose any of the candidates.
+            ValueError: If the LLM answered with ids that are not candidates.
         """
-        by_id = {c.id: c for c in candidates if c.id}
-        disamb_entities = [
-            DisambiguationResult(candidate=by_id[i])
-            for i in entity_ids if i in by_id
-        ]
-        if disamb_entities:
-            return disamb_entities[:limit] if limit else disamb_entities
-        LOG.warning('term=%r raw_ids=%r candidate_ids=%r',
-                    mention.term, entity_ids, list(by_id)[:5])
+        by_answer = LLM_Disambiguator._by_answer(candidates)
+        answers = [i.strip().strip('`"\'[]().') for i in entity_ids]
+        answers = [a for a in answers if a and a.lower() not in ('none', 'null', 'n/a')]
+        chosen: dict[int, Candidate] = {}
+        for answer in answers:
+            candidate = by_answer.get(answer.lower())
+            if candidate is not None:
+                chosen.setdefault(id(candidate), candidate)
+        if chosen:
+            results = [DisambiguationResult(candidate=c) for c in chosen.values()]
+            return results[:limit] if limit else results
+        if not answers:
+            LOG.info('The LLM found no candidate for the term `%s`.', mention.term)
+            return []
+        LOG.warning('term=%r raw_ids=%r candidates=%d', mention.term, entity_ids, len(candidates))
         raise ValueError(f'Could not disambiguate the term `{mention.term}` among the candidates.')

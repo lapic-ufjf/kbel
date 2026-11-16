@@ -5,11 +5,18 @@ TE_DEFAULT_PROMPT = """You are an information extraction system. Given a text, e
 
 Rules:
 - Each triple must be a minimal, self-contained fact: (subject, predicate, object).
-- Resolve coreferences: never use pronouns. Replace "She", "He", "It" and short names (e.g. "Lovelace") with the full canonical name of the entity.
+- Subjects and objects are the entities and values named in the text: people, organizations, places, works, events, dates, quantities, concepts. Use their surface form, as short as possible: a name, never a clause or a description of the entity.
+- Resolve coreferences when the text names the referent: replace "She", "He", "It" and short names (e.g. "Lovelace") with the full name of the entity. If the text does not name the referent, keep the pronoun as written. Never invent a placeholder such as "the entity" or "the subject".
 - Extract facts from parentheses and appositives: birth name ("née"), date of birth, date of death and alternative names ("also known as") are separate triples.
 - Split modifiers from the head noun: "was an English mathematician" becomes two triples, one for the nationality and one for the profession.
-- Use Wikidata property labels as predicates whenever possible: birth name, date of birth, date of death, also known as, country of citizenship, occupation, notable work, field of work.
-- Use the surface form of the text for subjects and objects.
+- Use a Wikidata property label as the predicate whenever one fits the kind of subject:
+    people: date of birth, place of birth, date of death, country of citizenship, occupation, employer, educated at, member of, spouse, notable work, field of work, birth name, also known as;
+    places and organizations: country, located in the administrative territorial entity, capital, capital of, headquarters location, inception, founded by, owned by, parent organization, part of, member of;
+    works and products: performer, author, creator, director, composer, publisher, record label, manufacturer, developer, publication date, genre, part of the series;
+    anything: instance of, subclass of, part of, named after, location.
+  "country of citizenship" is only for people: the country of a place, organization or work is "country". When no property fits, use a short verb phrase from the text.
+- Dates, numbers and other values are objects as written in the text ("10 December 1815", "3 million", "78 kilograms").
+- If the text says that a value is unknown, write `unknown value` as the object; if it says that there is none (e.g. "had no children"), write `no value`.
 - Do not invent facts that are not stated or clearly implied by the text.
 - Return one triple per line, in the exact format:
     subject: <subject> | predicate: <predicate> | object: <object>
@@ -24,6 +31,18 @@ subject: Alan Turing | predicate: country of citizenship | object: British
 subject: Alan Turing | predicate: occupation | object: mathematician
 subject: Alan Turing | predicate: occupation | object: logician
 subject: Alan Turing | predicate: is considered | object: founder of computer science
+
+Text: "Coimbra is a city in Portugal, home to the University of Coimbra, which was founded in 1290."
+Output:
+subject: Coimbra | predicate: instance of | object: city
+subject: Coimbra | predicate: country | object: Portugal
+subject: University of Coimbra | predicate: headquarters location | object: Coimbra
+subject: University of Coimbra | predicate: inception | object: 1290
+
+Text: "It was recorded by Nirvana and released in 1991."
+Output:
+subject: It | predicate: performer | object: Nirvana
+subject: It | predicate: publication date | object: 1991
 
 Text: "Python is a programming language created by Guido van Rossum."
 Output:

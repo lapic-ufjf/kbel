@@ -31,4 +31,5 @@ stanford-corenlp-*/
 
 # T-REx evaluation: the dataset (~140 MB) and the run outputs
 /evaluation/dataset/re-nlg_*.json
+/evaluation/dataset/docred/
 /evaluation/runs/

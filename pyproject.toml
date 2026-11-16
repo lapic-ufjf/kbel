@@ -73,6 +73,8 @@ dev = [
 openie = []
 relik = []
 kggen = ["kg-gen>=0.4"]
+coreference = ["fastcoref>=2.1.6", "spacy>=3.7"]
+evaluation = ["pandas", "matplotlib", "jupyter"]
 
 mrebel = [
     "torch>=2",

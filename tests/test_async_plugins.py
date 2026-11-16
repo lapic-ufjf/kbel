@@ -143,6 +143,69 @@ def test_llm_disambiguator_unknown_ids_raise():
         asyncio.run(Disambiguator('llm', model=model).adisambiguate(MENTION, CANDIDATES))
 
 
+def test_llm_prompt_numbers_the_candidates_instead_of_showing_iris():
+    model = ScriptedChatModel(reply='C2')
+    [result] = Disambiguator('llm', model=model).disambiguate(MENTION, CANDIDATES)
+    assert result.candidate.id == 'Q28865'
+    [prompt] = model.prompts
+    assert 'ID: C1\n' in prompt and 'ID: C2\n' in prompt
+    assert 'wikidata.org' not in prompt and 'Q28865' not in prompt
+
+
+@pytest.mark.parametrize('reply', [
+    'C2', 'c2', '`C2`', 'Q28865', 'http://www.wikidata.org/entity/Q28865', 'C2, C2', 'C9, C2'])
+def test_llm_disambiguator_accepts_the_usual_ways_of_naming_a_candidate(reply):
+    iri_only = [Candidate(iri=c.iri, id=c.iri, label=c.label, description=c.description)
+                for c in CANDIDATES]
+    for candidates in (CANDIDATES, iri_only):
+        results = Disambiguator('llm', model=ScriptedChatModel(reply=reply)).disambiguate(
+            MENTION, candidates)
+        assert [r.candidate.iri for r in results] == ['http://www.wikidata.org/entity/Q28865']
+
+
+@pytest.mark.parametrize('reply', ['', 'NONE', 'none.'])
+def test_llm_disambiguator_without_a_match_returns_nothing(reply):
+    model = ScriptedChatModel(reply=reply, async_only=True)
+    assert asyncio.run(Disambiguator('llm', model=model).adisambiguate(MENTION, CANDIDATES)) == []
+
+
+def test_llm_disambiguator_keeps_one_chain_per_instance():
+    first = Disambiguator('llm', model=ScriptedChatModel(reply='C1'))
+    second = Disambiguator('llm', model=ScriptedChatModel(reply='C2'))
+    assert first.disambiguate(MENTION, CANDIDATES)[0].candidate.id == 'Q271218'
+    assert second.disambiguate(MENTION, CANDIDATES)[0].candidate.id == 'Q28865'
+    assert first._chain(True) is first._chain(True)
+    assert first._chain(True) is not second._chain(True)
+
+
+def test_build_model_validates_its_arguments():
+    from kbel.disambiguators.llm.utils import build_model
+
+    with pytest.raises(ValueError, match='model_apikey'):
+        build_model('gpt-4o-mini', 'openai', 'https://api.openai.com/v1', None)
+    with pytest.raises(ValueError, match='provider'):
+        build_model('x', 'nope', 'http://localhost', 'key')
+    with pytest.raises(ValueError, match='project_id'):
+        build_model('x', 'ibm', 'http://localhost', 'key')
+    with pytest.raises(ValueError, match='model_name'):
+        Disambiguator('llm')
+
+
+def test_build_model_passes_parameters_to_ollama_and_needs_no_key(monkeypatch):
+    import sys
+    import types
+
+    from kbel.disambiguators.llm.utils import build_model
+
+    created = {}
+    module = types.ModuleType('langchain_ollama')
+    module.ChatOllama = lambda **kwargs: created.update(kwargs) or 'model'
+    monkeypatch.setitem(sys.modules, 'langchain_ollama', module)
+    assert build_model('llama3.1', 'ollama', 'http://localhost:11434', temperature=0.2) == 'model'
+    assert created == {'model': 'llama3.1', 'base_url': 'http://localhost:11434',
+                       'temperature': 0.2}
+
+
 def test_llm_disambiguator_requires_text():
     model = ScriptedChatModel(reply='Q28865')
     with pytest.raises(AssertionError):
@@ -168,6 +231,33 @@ def test_llm_extractor_async_is_native():
         'Python was created by Guido van Rossum.', prompt='Custom system prompt.'))
     assert len(triples) == 2
     assert model.sync_calls == 0
+
+
+def test_llm_extractor_custom_prompt_may_contain_braces_and_ask_for_json():
+    reply = '```json\n[{"subject": "Python", "predicate": "created by", "object": "Guido"}]\n```'
+    model = ScriptedChatModel(reply=reply)
+    prompt = 'Answer with JSON: [{"subject": "...", "predicate": "...", "object": "..."}]'
+    extractor = TripleExtractor('llm', model=model)
+    assert extractor.extract('Python {was} created by Guido.', prompt=prompt) == [
+        Triple('Python', 'created by', 'Guido')]
+    assert 'Text: "Python {was} created by Guido."' in model.prompts[0]
+
+
+def test_llm_extractor_ignores_bullets_and_incomplete_lines():
+    reply = ('1. subject: A | predicate: b | object: C\n'
+             '- subject: D | predicate: e: f | object: G\n'
+             'subject: H | predicate: i | object:\n'
+             'Here are the triples')
+    extractor = TripleExtractor('llm', model=ScriptedChatModel(reply=reply))
+    assert extractor.extract('Some text.') == [Triple('A', 'b', 'C'), Triple('D', 'e: f', 'G')]
+
+
+def test_default_extraction_prompt_does_not_force_person_properties():
+    from kbel.extractors.llm.constants import TE_DEFAULT_PROMPT
+
+    assert '"country of citizenship" is only for people' in TE_DEFAULT_PROMPT
+    assert 'keep the pronoun' in TE_DEFAULT_PROMPT
+    assert '`unknown value`' in TE_DEFAULT_PROMPT and '`no value`' in TE_DEFAULT_PROMPT
 
 
 # -- wikidata-vdb search -------------------------------------------------------------
@@ -220,6 +310,20 @@ def test_vdb_async_search_matches_sync(vdb):
     assert async_results == sync_results == [('Q270', 'Warsaw')]   # missing/invalid skipped
     assert calls['async'][0].endswith('/item/query/')               # vector DB, not wbsearchentities
     assert len(calls['async']) == len(calls['sync']) == 2
+
+
+def test_vdb_entities_use_the_canonical_wikidata_iris(vdb):
+    search, _ = vdb
+    [(item, _)] = search.item_descriptor(search='Warsaw', limit=5)
+    assert item.iri.content == 'http://www.wikidata.org/entity/Q270'
+
+
+def test_vdb_does_not_download_the_claims_of_the_results():
+    from kif_lib.search import Search
+
+    [params] = Search('wikidata-vdb')._entities_params(['Q270', 'P19'], 'en')
+    assert params['ids'] == 'Q270|P19'
+    assert set(params['props'].split('|')) == {'labels', 'descriptions', 'aliases', 'datatype'}
 
 
 def test_vdb_async_property_search_uses_property_endpoint(vdb):

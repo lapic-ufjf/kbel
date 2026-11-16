@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import importlib
 import logging
 from abc import abstractmethod
 from typing import (Any, ClassVar, Final)
@@ -20,6 +21,10 @@ class Disambiguator:
     Subclasses must implement the `_disambiguate` method, which contains the
     logic to select the correct entity among a list of candidates.
 
+    Plugins are created by name, ``Disambiguator('sim', ...)``. The ones
+    shipped with KBEL (`builtin`) are imported on first use; a custom
+    plugin is available once the module that defines it is imported.
+
     `adisambiguate` is the async counterpart of `disambiguate`. By default
     it runs `_disambiguate` in a worker thread; subclasses with a natively
     async backend (e.g. an LLM client) override `_adisambiguate`.
@@ -31,6 +36,12 @@ class Disambiguator:
     strategy_name: ClassVar[str]
 
     registry: Final[dict[str, type['Disambiguator']]] = {}
+
+    builtin: Final[dict[str, str]] = {
+        'naive': 'kbel.disambiguators.naive',
+        'sim': 'kbel.disambiguators.similarity',
+        'llm': 'kbel.disambiguators.llm',
+    }
 
     @classmethod
     def _register(
@@ -52,6 +63,8 @@ class Disambiguator:
         Disambiguator._register(cls, strategy_name)
 
     def __new__(cls, strategy_name: str, *args: Any, **kwargs: Any):
+        if strategy_name not in cls.registry and strategy_name in cls.builtin:
+            importlib.import_module(cls.builtin[strategy_name])
         KIF_Object._check_arg(
             strategy_name,
             strategy_name in cls.registry,
@@ -78,7 +91,6 @@ class Disambiguator:
         Args:
             mention (Mention): The mention to disambiguate.
             candidates (list[Candidate]): Candidate entities.
-            cls (Type[T]): Entity type (Item or Property).
             limit (int, optional): Maximum number of candidates to return. Defaults to 10.
 
         Returns:

@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import importlib
 import logging
 import shutil
 import subprocess
 from abc import abstractmethod
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
@@ -19,6 +21,10 @@ LOG = logging.getLogger(__name__)
 
 class TripleExtractor:
     """Base class for triple extractors.
+
+    Plugins are created by name, ``TripleExtractor('mrebel', ...)``. The
+    ones shipped with KBEL (`builtin`) are imported on first use; a custom
+    plugin is available once the module that defines it is imported.
 
     Subclasses implement `_extract`. The async API (`aextract`,
     `aextract_batch`) runs `_extract` in worker threads by default, so it
@@ -36,6 +42,15 @@ class TripleExtractor:
 
     strategy_name: ClassVar[str]
     registry: Final[dict[str, type['TripleExtractor']]] = {}
+    builtin: Final[dict[str, str]] = {
+        'openie': 'kbel.extractors.openie',
+        'mrebel': 'kbel.extractors.mrebel',
+        'relik': 'kbel.extractors.relik',
+        'relik-cie': 'kbel.extractors.relik',
+        'kggen': 'kbel.extractors.kggen',
+        'kggen-cluster': 'kbel.extractors.kggen',
+        'llm': 'kbel.extractors.llm',
+    }
     batch_size: int = 1
 
     @classmethod
@@ -48,6 +63,8 @@ class TripleExtractor:
         TripleExtractor._register(cls, strategy_name)
 
     def __new__(cls, strategy_name: str, *args: Any, **kwargs: Any):
+        if strategy_name not in cls.registry and strategy_name in cls.builtin:
+            importlib.import_module(cls.builtin[strategy_name])
         KIF_Object._check_arg(
             strategy_name,
             strategy_name in cls.registry,
@@ -108,6 +125,52 @@ class TripleExtractor:
         """Async version of `extract_batch`."""
         assert all(t and t.strip() for t in texts), 'No text to extract triples from'
         return await self._aextract_batch(texts, prompt)
+
+    def iter_extract_batch(
+        self, texts: Iterable[str], prompt=None,
+    ) -> Iterator[list[Triple]]:
+        """Extracts the triples of many texts lazily.
+
+        Texts are taken `batch_size` at a time; the triples of each text
+        are yielded, in order, as soon as its group is done.
+        """
+        group: list[str] = []
+        for text in texts:
+            group.append(text)
+            if len(group) >= max(1, self.batch_size):
+                yield from self.extract_batch(group, prompt)
+                group = []
+        if group:
+            yield from self.extract_batch(group, prompt)
+
+    async def aiter_extract_batch(
+        self, texts: Iterable[str] | AsyncIterable[str], prompt=None,
+    ) -> AsyncIterator[list[Triple]]:
+        """Async version of `iter_extract_batch`; also accepts an async iterable."""
+        size = max(1, self.batch_size)
+        group: list[str] = []
+
+        async def flush() -> AsyncIterator[list[Triple]]:
+            for triples in await self.aextract_batch(group, prompt):
+                yield triples
+
+        if isinstance(texts, AsyncIterable):
+            async for text in texts:
+                group.append(text)
+                if len(group) >= size:
+                    async for triples in flush():
+                        yield triples
+                    group = []
+        else:
+            for text in texts:
+                group.append(text)
+                if len(group) >= size:
+                    async for triples in flush():
+                        yield triples
+                    group = []
+        if group:
+            async for triples in flush():
+                yield triples
 
     def _maybe_graph(self, triples: list[Triple], graph: bool | None,
                      graph_path: str | Path | None) -> None:

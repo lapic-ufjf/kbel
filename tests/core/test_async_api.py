@@ -178,10 +178,13 @@ def test_construct_uses_native_async_plugins(scripted_search):
 
 def test_aextract_on_kbel(scripted_search):
     kbel = KBEL('empty', extractor=TripleExtractor('test-native-extract'))
-    assert asyncio.run(kbel.aextract('Gamma rays.')) == [
-        Triple('Gamma', 'mentions', 'something')]
+    async def collect():
+        return [t async for t in kbel.aextract('Gamma rays.')]
+
+    assert asyncio.run(collect()) == [Triple('Gamma', 'mentions', 'something')]
+    assert list(kbel.extract('Gamma rays.')) == [Triple('Gamma', 'mentions', 'something')]
     with pytest.raises(RuntimeError, match='No extractor'):
-        asyncio.run(KBEL('empty').aextract('x'))
+        KBEL('empty').aextract('x')
 
 
 # -- aextract_and_link -------------------------------------------------------------
@@ -198,8 +201,11 @@ def test_aextract_and_link_matches_extract_and_link(scripted_search):
     kbel = KBEL('empty', disambiguator='test-slow-sync', extractor='test-two-triples')
     kbel.disambiguator = Disambiguator('test-slow-sync', delay=0)
 
-    async_result = asyncio.run(kbel.aextract_and_link('Alpha is one.', limit=1))
-    assert async_result == kbel.extract_and_link('Alpha is one.', limit=1)
+    async def collect():
+        return [x async for x in kbel.aextract_and_link('Alpha is one.', limit=1)]
+
+    async_result = asyncio.run(collect())
+    assert async_result == list(kbel.extract_and_link('Alpha is one.', limit=1))
 
     (t1, (s1, p1, o1)), (t2, (s2, p2, o2)) = async_result
     assert t1 == Triple('Alpha', 'is', 'one') and len(s1) == len(p1) == len(o1) == 1
@@ -211,7 +217,7 @@ def test_aextract_and_link_links_concurrently_and_once(scripted_search):
     kbel.disambiguator = d = Disambiguator('test-slow-sync', delay=0.2)
 
     start = time.perf_counter()
-    asyncio.run(kbel.aextract_and_link('Alpha is one.'))
+    list(kbel.extract_and_link('Alpha is one.'))
     elapsed = time.perf_counter() - start
 
     # 6 mentions, 4 distinct -> 3 with candidates ("She" has none)
@@ -222,14 +228,16 @@ def test_aextract_and_link_links_concurrently_and_once(scripted_search):
 def test_aextract_and_link_requires_disambiguator(scripted_search):
     kbel = KBEL('empty', extractor='test-two-triples')
     with pytest.raises(RuntimeError, match='No disambiguator'):
-        asyncio.run(kbel.aextract_and_link('x'))
+        kbel.aextract_and_link('x')
 
 
-def test_extract_and_link_passes_extractor_kwargs(scripted_search, tmp_path):
+def test_extract_draws_the_graph_when_the_iteration_ends(scripted_search, tmp_path):
     kbel = KBEL('empty', extractor='test-two-triples')
-    kbel.disambiguator = Disambiguator('test-slow-sync', delay=0)
-    kbel.extract_and_link('Alpha is one.', graph=True, graph_path=tmp_path / 'g.dot')
-    assert (tmp_path / 'g.dot').exists()
+    iterator = kbel.extract('Alpha is one.', graph=True, graph_path=tmp_path / 'g.dot')
+    next(iterator)
+    assert not (tmp_path / 'g.dot').exists()
+    list(iterator)
+    assert 'Alpha' in (tmp_path / 'g.dot').read_text()
 
 
 class Batched(TripleExtractor, strategy_name='test-batched'):
